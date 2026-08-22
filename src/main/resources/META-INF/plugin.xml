@@ -1,0 +1,29 @@
+<idea-plugin>
+    <id>com.example.myplugin</id>
+    <name>My Plugin</name>
+    <version>1.0</version>
+    <vendor email="example@example.com" url="https://example.com">Example</vendor>
+
+    <description><![CDATA[
+        A local LLM plugin with Llama.cpp support.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow
+                id="My Plugin"
+                anchor="right"
+                icon="AllIcons.Actions.Lightning"
+                canCloseContents="true"
+                factoryClass="com.example.myplugin.MyToolWindowFactory"/>
+
+        <applicationService
+                serviceImplementation="com.example.myplugin.settings.PluginStateService"/>
+
+        <applicationConfigurable
+                parentId="tools"
+                instance="com.example.myplugin.settings.SettingsConfigurable"
+                displayName="My Plugin Settings"/>
+    </extensions>
+</idea-plugin>
