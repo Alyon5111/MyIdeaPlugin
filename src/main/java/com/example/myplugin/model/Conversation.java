@@ -13,8 +13,9 @@ public class Conversation {
 
     public static class ChatMessage {
         private final Role role;
-        private final String content;
+        private String content;
         private String thinking;
+        private final List<ToolCallRecord> toolCalls = new ArrayList<>();
 
         public ChatMessage(Role role, String content) {
             this.role = role;
@@ -30,6 +31,10 @@ public class Conversation {
             return content;
         }
 
+        public void setContent(String content) {
+            this.content = content;
+        }
+
         public String getThinking() {
             return thinking;
         }
@@ -37,6 +42,38 @@ public class Conversation {
         public void setThinking(String thinking) {
             this.thinking = thinking;
         }
+
+        public List<ToolCallRecord> getToolCalls() {
+            return toolCalls;
+        }
+
+        public void addToolCall(String toolName, String arguments, String result) {
+            toolCalls.add(new ToolCallRecord(toolName, arguments, result));
+        }
+
+        public void updateLastToolCallResult(String result) {
+            if (!toolCalls.isEmpty()) {
+                ToolCallRecord last = toolCalls.get(toolCalls.size() - 1);
+                toolCalls.set(toolCalls.size() - 1,
+                        new ToolCallRecord(last.getToolName(), last.getArguments(), result));
+            }
+        }
+    }
+
+    public static class ToolCallRecord {
+        private final String toolName;
+        private final String arguments;
+        private final String result;
+
+        public ToolCallRecord(String toolName, String arguments, String result) {
+            this.toolName = toolName;
+            this.arguments = arguments;
+            this.result = result;
+        }
+
+        public String getToolName() { return toolName; }
+        public String getArguments() { return arguments; }
+        public String getResult() { return result; }
     }
 
     private final String id;

@@ -21,6 +21,9 @@
         <applicationService
                 serviceImplementation="com.example.myplugin.settings.PluginStateService"/>
 
+        <projectService
+                serviceImplementation="com.example.myplugin.service.ConversationService"/>
+
         <applicationConfigurable
                 parentId="tools"
                 instance="com.example.myplugin.settings.SettingsConfigurable"

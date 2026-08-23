@@ -8,27 +8,24 @@ import java.util.function.Consumer;
 
 public class ConversationService {
 
-    private static ConversationService instance;
-
     private final List<Conversation> conversations;
     private Conversation currentConversation;
     private Consumer<Conversation> onConversationChanged;
-    private Runnable onAllConversationsDeleted;
+    private int conversationCounter = 0;
 
-    private ConversationService() {
+    public ConversationService() {
         conversations = new ArrayList<>();
     }
 
-    public static synchronized ConversationService getInstance() {
-        if (instance == null) {
-            instance = new ConversationService();
-        }
-        return instance;
+    public void reset() {
+        conversations.clear();
+        currentConversation = null;
+        conversationCounter = 0;
     }
 
     public Conversation createNewConversation(String title) {
         if (title == null || title.isEmpty()) {
-            title = "New Chat";
+            title = "New Chat " + (++conversationCounter);
         }
         Conversation conv = new Conversation(title);
         conversations.add(0, conv);
@@ -43,10 +40,7 @@ public class ConversationService {
         conversations.remove(conv);
         if (currentConversation == conv) {
             if (conversations.isEmpty()) {
-                currentConversation = null;
-                if (onAllConversationsDeleted != null) {
-                    onAllConversationsDeleted.run();
-                }
+                createNewConversation(null);
             } else {
                 switchTo(conversations.get(0));
             }
@@ -86,9 +80,5 @@ public class ConversationService {
 
     public void setOnConversationChanged(Consumer<Conversation> listener) {
         this.onConversationChanged = listener;
-    }
-
-    public void setOnAllConversationsDeleted(Runnable listener) {
-        this.onAllConversationsDeleted = listener;
     }
 }

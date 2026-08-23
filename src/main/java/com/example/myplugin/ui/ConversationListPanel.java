@@ -17,9 +17,9 @@ public class ConversationListPanel extends JPanel {
     private final ConversationService conversationService;
     private final Map<String, JPanel> buttonMap = new HashMap<>();
 
-    public ConversationListPanel() {
+    public ConversationListPanel(ConversationService conversationService) {
         super(new BorderLayout());
-        conversationService = ConversationService.getInstance();
+        this.conversationService = conversationService;
 
         // Scrollable list
         listPanel = new JPanel();

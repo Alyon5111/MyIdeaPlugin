@@ -1,5 +1,6 @@
 package com.example.myplugin.ui;
 
+import com.example.myplugin.agent.AgentExecutor;
 import com.example.myplugin.chatmodel.ChatModelFactory;
 import com.example.myplugin.chatmodel.ChatModelFactoryProvider;
 import com.example.myplugin.chatmodel.local.llamacpp.LlamaChatStreamClient;
@@ -11,6 +12,7 @@ import com.example.myplugin.model.LanguageModel;
 import com.example.myplugin.model.ModelProvider;
 import com.example.myplugin.service.ConversationService;
 import com.example.myplugin.settings.PluginStateService;
+import com.intellij.openapi.project.Project;
 import com.intellij.ui.components.JBScrollPane;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
@@ -42,9 +44,18 @@ public class ChatPanel extends JPanel {
     private ThinkingPanel currentThinkingPanel;
     private JTextArea currentAnswerArea;
 
-    public ChatPanel() {
+    // Agent state
+    private final JCheckBox agentToggle;
+    private AgentExecutor agentExecutor;
+    private Thread agentThread;
+    private boolean programmaticTabChange = false;
+
+    public ChatPanel(Project project, ConversationService conversationService) {
         super(new BorderLayout());
-        conversationService = ConversationService.getInstance();
+        this.conversationService = conversationService;
+        if (project != null) {
+            agentExecutor = new AgentExecutor(project);
+        }
 
         // Top bar: model selector + refresh
         JPanel topBar = new JPanel(new BorderLayout());
@@ -60,12 +71,17 @@ public class ChatPanel extends JPanel {
         });
 
         JPanel eastPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 2, 0));
+        agentToggle = new JCheckBox("Agent");
+        agentToggle.setToolTipText("Toggle Agent mode (tool calling)");
+        agentToggle.setFont(new Font("Dialog", Font.BOLD, 11));
+        eastPanel.add(agentToggle);
         eastPanel.add(refreshButton);
         topBar.add(eastPanel, BorderLayout.EAST);
 
         statusLabel = new JLabel(" ");
         statusLabel.setFont(new Font("Dialog", Font.ITALIC, 11));
         statusLabel.setForeground(Color.GRAY);
+        statusLabel.setBorder(BorderFactory.createEmptyBorder(2, 4, 2, 4));
         topBar.add(statusLabel, BorderLayout.SOUTH);
 
         add(topBar, BorderLayout.NORTH);
@@ -77,10 +93,11 @@ public class ChatPanel extends JPanel {
 
         // Tab change listener
         conversationTabs.addChangeListener(e -> {
+            if (programmaticTabChange) return;
             int idx = conversationTabs.getSelectedIndex();
             if (idx < 0) return;
 
-            // "+" tab clicked — create new conversation
+            // "+" tab clicked - create new conversation
             if (isAddTab(idx)) {
                 int prevIdx = Math.max(0, idx - 1);
                 conversationTabs.setSelectedIndex(prevIdx);
@@ -227,7 +244,12 @@ public class ChatPanel extends JPanel {
 
         int tabIdx = findTabIndex(convId);
         if (tabIdx >= 0) {
-            conversationTabs.setSelectedIndex(tabIdx);
+            programmaticTabChange = true;
+            try {
+                conversationTabs.setSelectedIndex(tabIdx);
+            } finally {
+                programmaticTabChange = false;
+            }
         }
     }
 
@@ -247,8 +269,13 @@ public class ChatPanel extends JPanel {
         scrollPaneMap.put(conv.getId(), scrollPane);
 
         int addTabIdx = conversationTabs.getTabCount() - 1;
-        conversationTabs.insertTab(conv.getTitle(), null, scrollPane, null, addTabIdx);
-        conversationTabs.setTabComponentAt(addTabIdx, buildTabComponent(conv));
+        programmaticTabChange = true;
+        try {
+            conversationTabs.insertTab(conv.getTitle(), null, scrollPane, null, addTabIdx);
+            conversationTabs.setTabComponentAt(addTabIdx, buildTabComponent(conv));
+        } finally {
+            programmaticTabChange = false;
+        }
 
         rebuildMessages(messagesPanel, conv);
     }
@@ -346,10 +373,26 @@ public class ChatPanel extends JPanel {
         int idx = findTabIndex(conv.getId());
         if (idx < 0) return;
 
+        if (conversationService.size() <= 1) {
+            return;
+        }
+
+        Conversation nextConv = null;
+        for (Conversation c : conversationService.getConversations()) {
+            if (c != conv) {
+                nextConv = c;
+                break;
+            }
+        }
+
         conversationTabs.removeTabAt(idx);
         messagesPanelMap.remove(conv.getId());
         scrollPaneMap.remove(conv.getId());
-        conversationService.deleteConversation(conv);
+        conversationService.getConversations().remove(conv);
+
+        if (nextConv != null) {
+            conversationService.switchTo(nextConv);
+        }
     }
 
     private int findTabIndex(String convId) {
@@ -543,6 +586,14 @@ public class ChatPanel extends JPanel {
         inputArea.setText("");
         rebuildMessages(messagesPanel, conv);
 
+        if (agentToggle.isSelected() && agentExecutor != null) {
+            agentResponse(messagesPanel, scrollPane, conv, selectedModel.getModelName());
+        } else {
+            chatResponse(messagesPanel, scrollPane, selectedModel, conv);
+        }
+    }
+
+    private void chatResponse(JPanel messagesPanel, JScrollPane scrollPane, LanguageModel selectedModel, Conversation conv) {
         // Prepare streaming UI components
         currentThinkingPanel = createThinkingPanel();
         currentThinkingPanel.startStreaming();
@@ -570,6 +621,71 @@ public class ChatPanel extends JPanel {
         } else {
             nonStreamResponse(messagesPanel, scrollPane, selectedModel, state, conv);
         }
+    }
+
+    private void agentResponse(JPanel messagesPanel, JScrollPane scrollPane, Conversation conv, String modelName) {
+        setStreaming(true);
+        setStatus("Agent working...");
+
+        ThinkingPanel thinkingPanel = createThinkingPanel();
+        thinkingPanel.startStreaming();
+        messagesPanel.add(thinkingPanel);
+        messagesPanel.revalidate();
+        scrollToBottom(scrollPane);
+
+        Conversation.ChatMessage agentMsg = new Conversation.ChatMessage(Conversation.Role.ASSISTANT, "");
+
+        agentThread = new Thread(() -> {
+            StringBuilder thinkingBuf = new StringBuilder();
+            try {
+                agentExecutor.execute(conv.getMessages(), modelName, new AgentExecutor.AgentEvent() {
+                    @Override
+                    public void onToolCall(String toolName, String arguments) {
+                        String entry = "[Tool Call] " + toolName + ": " + arguments + "\n";
+                        thinkingBuf.append(entry);
+                        thinkingPanel.appendThinking(entry);
+                        SwingUtilities.invokeLater(() -> scrollToBottom(scrollPane));
+                    }
+
+                    @Override
+                    public void onToolResult(String toolName, String result) {
+                        String entry = "[Tool Result] " + toolName + ": " + result + "\n\n";
+                        thinkingBuf.append(entry);
+                        thinkingPanel.appendThinking(entry);
+                        SwingUtilities.invokeLater(() -> scrollToBottom(scrollPane));
+                    }
+
+                    @Override
+                    public void onAnswer(String text) {}
+
+                    @Override
+                    public void onError(String error) {}
+                });
+
+                thinkingPanel.finishStreaming();
+                agentMsg.setThinking(thinkingBuf.toString());
+
+                String finalAnswer = agentExecutor.getLastAnswer();
+                agentMsg.setContent(finalAnswer != null ? finalAnswer : "");
+                conv.getMessages().add(agentMsg);
+
+                SwingUtilities.invokeLater(() -> {
+                    rebuildMessages(messagesPanel, conv);
+                    scrollToBottom(scrollPane);
+                    refreshTabTitle(conv);
+                    setStreaming(false);
+                    setStatus("Agent done");
+                });
+            } catch (Exception e) {
+                SwingUtilities.invokeLater(() -> {
+                    addAssistantMessage(messagesPanel, "Agent error: " + e.getMessage());
+                    scrollToBottom(scrollPane);
+                    setStreaming(false);
+                    setStatus("Agent error");
+                });
+            }
+        }, "agent-executor");
+        agentThread.start();
     }
 
     private void streamResponse(JPanel messagesPanel, JScrollPane scrollPane, LanguageModel selectedModel, PluginStateService state, Conversation conv) {
@@ -677,6 +793,9 @@ public class ChatPanel extends JPanel {
     }
 
     private void stopStreaming() {
+        if (agentToggle.isSelected() && agentExecutor != null) {
+            agentExecutor.cancel();
+        }
         if (currentStreamThread != null) {
             currentStreamThread.interrupt();
             setStreaming(false);
@@ -700,6 +819,6 @@ public class ChatPanel extends JPanel {
     }
 
     private void setStatus(String text) {
-        statusLabel.setText(text);
+        SwingUtilities.invokeLater(() -> statusLabel.setText(text));
     }
 }
