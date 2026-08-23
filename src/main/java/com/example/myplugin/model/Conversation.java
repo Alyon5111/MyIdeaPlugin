@@ -12,10 +12,12 @@ public class Conversation {
     }
 
     public static class ChatMessage {
-        private final Role role;
+        private Role role;
         private String content;
         private String thinking;
-        private final List<ToolCallRecord> toolCalls = new ArrayList<>();
+        private List<ToolCallRecord> toolCalls = new ArrayList<>();
+
+        private ChatMessage() {}
 
         public ChatMessage(Role role, String content) {
             this.role = role;
@@ -61,9 +63,11 @@ public class Conversation {
     }
 
     public static class ToolCallRecord {
-        private final String toolName;
-        private final String arguments;
-        private final String result;
+        private String toolName;
+        private String arguments;
+        private String result;
+
+        private ToolCallRecord() {}
 
         public ToolCallRecord(String toolName, String arguments, String result) {
             this.toolName = toolName;

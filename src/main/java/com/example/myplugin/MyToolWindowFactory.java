@@ -16,16 +16,24 @@ public class MyToolWindowFactory implements ToolWindowFactory {
     @Override
     public void createToolWindowContent(@NotNull Project project, @NotNull ToolWindow toolWindow) {
         ConversationService service = project.getService(ConversationService.class);
-        service.reset();
 
         ChatPanel chatPanel = new ChatPanel(project, service);
         SettingsPanel settingsPanel = new SettingsPanel();
 
-        Conversation firstConv = service.createNewConversation(null);
-
         service.setOnConversationChanged(chatPanel::loadConversation);
 
-        chatPanel.loadConversation(firstConv);
+        if (service.getConversations().isEmpty()) {
+            Conversation firstConv = service.createNewConversation(null);
+            chatPanel.loadConversation(firstConv);
+        } else {
+            for (int i = service.getConversations().size() - 1; i >= 0; i--) {
+                chatPanel.loadConversation(service.getConversations().get(i));
+            }
+            Conversation current = service.getCurrentConversation();
+            if (current != null) {
+                chatPanel.loadConversation(current);
+            }
+        }
 
         ContentFactory contentFactory = ContentFactory.getInstance();
 

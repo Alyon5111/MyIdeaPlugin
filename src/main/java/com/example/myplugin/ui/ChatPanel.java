@@ -347,6 +347,7 @@ public class ChatPanel extends JPanel {
             String newName = field.getText().trim();
             if (!newName.isEmpty()) {
                 conv.setTitle(newName);
+                conversationService.save();
             }
             int idx = findTabIndex(conv.getId());
             if (idx >= 0) {
@@ -578,6 +579,7 @@ public class ChatPanel extends JPanel {
         }
 
         conv.addMessage(Conversation.Role.USER, prompt);
+        conversationService.save();
 
         JPanel messagesPanel = getCurrentMessagesPanel();
         JScrollPane scrollPane = getCurrentScrollPane();
@@ -668,6 +670,7 @@ public class ChatPanel extends JPanel {
                 String finalAnswer = agentExecutor.getLastAnswer();
                 agentMsg.setContent(finalAnswer != null ? finalAnswer : "");
                 conv.getMessages().add(agentMsg);
+                conversationService.save();
 
                 SwingUtilities.invokeLater(() -> {
                     rebuildMessages(messagesPanel, conv);
@@ -708,6 +711,7 @@ public class ChatPanel extends JPanel {
                     assistantMsg.setThinking(reasoning);
                     conv.getMessages().add(assistantMsg);
                     conv.setUpdatedAt(java.time.LocalDateTime.now());
+                    conversationService.save();
 
                     SwingUtilities.invokeLater(() -> {
                         if (hasThinking) {
@@ -768,6 +772,7 @@ public class ChatPanel extends JPanel {
                 String responseText = response.aiMessage().text();
 
                 conv.addMessage(Conversation.Role.ASSISTANT, responseText);
+                conversationService.save();
                 SwingUtilities.invokeLater(() -> {
                     messagesPanel.remove(currentThinkingPanel);
                     currentThinkingPanel = null;

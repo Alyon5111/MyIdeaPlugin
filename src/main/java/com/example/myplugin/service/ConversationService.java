@@ -1,6 +1,8 @@
 package com.example.myplugin.service;
 
 import com.example.myplugin.model.Conversation;
+import com.intellij.openapi.project.Project;
+import org.jetbrains.annotations.NotNull;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -8,13 +10,25 @@ import java.util.function.Consumer;
 
 public class ConversationService {
 
+    private final Project project;
     private final List<Conversation> conversations;
     private Conversation currentConversation;
     private Consumer<Conversation> onConversationChanged;
     private int conversationCounter = 0;
 
-    public ConversationService() {
+    public ConversationService(@NotNull Project project) {
+        this.project = project;
         conversations = new ArrayList<>();
+        loadFromDisk();
+    }
+
+    private void loadFromDisk() {
+        List<Conversation> saved = ConversationStorageService.load(project);
+        conversations.addAll(saved);
+        conversationCounter = saved.size();
+        if (!conversations.isEmpty()) {
+            currentConversation = conversations.get(0);
+        }
     }
 
     public void reset() {
@@ -30,6 +44,7 @@ public class ConversationService {
         Conversation conv = new Conversation(title);
         conversations.add(0, conv);
         currentConversation = conv;
+        save();
         if (onConversationChanged != null) {
             onConversationChanged.accept(currentConversation);
         }
@@ -38,6 +53,7 @@ public class ConversationService {
 
     public void deleteConversation(Conversation conv) {
         conversations.remove(conv);
+        save();
         if (currentConversation == conv) {
             if (conversations.isEmpty()) {
                 createNewConversation(null);
@@ -80,5 +96,9 @@ public class ConversationService {
 
     public void setOnConversationChanged(Consumer<Conversation> listener) {
         this.onConversationChanged = listener;
+    }
+
+    public void save() {
+        ConversationStorageService.save(project, conversations);
     }
 }
