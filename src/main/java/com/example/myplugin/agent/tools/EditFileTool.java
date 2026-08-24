@@ -4,18 +4,24 @@ import com.example.myplugin.agent.AgentContext;
 import com.example.myplugin.agent.AgentTool;
 import com.google.gson.JsonObject;
 import com.intellij.openapi.application.WriteAction;
+import com.intellij.openapi.command.WriteCommandAction;
+import com.intellij.openapi.diagnostic.Logger;
+import com.intellij.openapi.editor.Document;
+import com.intellij.openapi.fileEditor.FileDocumentManager;
+import com.intellij.openapi.project.Project;
 import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
+import org.jetbrains.annotations.NotNull;
 
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
 public class EditFileTool implements AgentTool {
 
+    private static final Logger LOG = Logger.getInstance(EditFileTool.class);
     private final AgentContext context;
 
     public EditFileTool(AgentContext context) {
@@ -30,7 +36,7 @@ public class EditFileTool implements AgentTool {
     @Override
     public String description() {
         return "Replace an exact string match in a file with new content. "
-                + "Use this for targeted edits without rewriting the whole file. "
+                + "Uses IntelliJ's Document API with undo support. "
                 + "The old_string must be an exact unique match in the file.";
     }
 
@@ -63,29 +69,44 @@ public class EditFileTool implements AgentTool {
             return "Error: file not found: " + path;
         }
 
+        Project project = context.getProject();
+
         try {
-            String content = Files.readString(filePath, StandardCharsets.UTF_8);
-
-            int count = countOccurrences(content, oldString);
-            if (count == 0) {
-                return "Error: old_string not found in " + path;
-            }
-            if (count > 1) {
-                return "Error: old_string found " + count + " times in " + path + ". Must be unique. Provide more context.";
-            }
-
-            String updated = content.replace(oldString, newString);
-            Files.writeString(filePath, updated, StandardCharsets.UTF_8);
-
-            WriteAction.runAndWait(() -> {
+            return WriteAction.compute(() -> {
                 VirtualFile vf = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(filePath);
-                if (vf != null) {
-                    vf.refresh(false, false);
+                if (vf == null) {
+                    return "Error: cannot find file in IDE: " + path;
                 }
-            });
 
-            return "File edited successfully: " + path;
-        } catch (IOException e) {
+                Document doc = FileDocumentManager.getInstance().getDocument(vf);
+                if (doc == null) {
+                    return "Error: cannot get document for file: " + path;
+                }
+
+                String content = doc.getText();
+
+                int count = countOccurrences(content, oldString);
+                if (count == 0) {
+                    return "Error: old_string not found in " + path;
+                }
+                if (count > 1) {
+                    return "Error: old_string found " + count + " times in " + path + ". Must be unique. Provide more context.";
+                }
+
+                int startIdx = content.indexOf(oldString);
+                final int start = startIdx;
+                final int end = startIdx + oldString.length();
+
+                WriteCommandAction.runWriteCommandAction(project, () -> {
+                    doc.replaceString(start, end, newString);
+                });
+
+                FileDocumentManager.getInstance().saveDocument(doc);
+
+                return "File edited successfully: " + path;
+            });
+        } catch (Exception e) {
+            LOG.warn("EditFileTool failed", e);
             return "Error editing file: " + e.getMessage();
         }
     }

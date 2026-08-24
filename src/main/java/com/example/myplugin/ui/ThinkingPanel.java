@@ -84,6 +84,17 @@ public class ThinkingPanel extends JPanel {
         setVisible(true);
     }
 
+    public void expand() {
+        collapsed = false;
+        JScrollPane sp = getScrollPane();
+        if (sp != null) {
+            sp.setVisible(true);
+        }
+        updateLabel();
+        revalidate();
+        repaint();
+    }
+
     public void appendThinking(String text) {
         fullText += text;
         SwingUtilities.invokeLater(() -> {

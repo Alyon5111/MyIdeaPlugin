@@ -3,15 +3,19 @@ package com.example.myplugin.agent.tools;
 import com.example.myplugin.agent.AgentContext;
 import com.example.myplugin.agent.AgentTool;
 import com.google.gson.JsonObject;
+import com.intellij.openapi.application.ReadAction;
+import com.intellij.openapi.diagnostic.Logger;
+import com.intellij.openapi.project.DumbService;
+import com.intellij.openapi.project.Project;
+import com.intellij.openapi.vfs.LocalFileSystem;
+import com.intellij.openapi.vfs.VfsUtil;
+import com.intellij.openapi.vfs.VirtualFile;
+import com.intellij.openapi.vfs.VirtualFileVisitor;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
+import org.jetbrains.annotations.NotNull;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
@@ -19,6 +23,7 @@ import java.util.regex.PatternSyntaxException;
 
 public class SearchCodeTool implements AgentTool {
 
+    private static final Logger LOG = Logger.getInstance(SearchCodeTool.class);
     private final AgentContext context;
 
     public SearchCodeTool(AgentContext context) {
@@ -34,6 +39,7 @@ public class SearchCodeTool implements AgentTool {
     public String description() {
         return "Search for a regex pattern across project source files. "
                 + "Returns matching lines with file path and line number. "
+                + "Uses IntelliJ's file index for accurate results. "
                 + "Optionally filter by file extension (e.g. \"*.java\").";
     }
 
@@ -63,39 +69,87 @@ public class SearchCodeTool implements AgentTool {
             return "Error: invalid regex pattern: " + e.getMessage();
         }
 
-        Path baseDir = context.getBaseDir();
+        Project project = context.getProject();
+
+        if (DumbService.isDumb(project)) {
+            return "Error: IDE is indexing, please wait and try again";
+        }
+
+        try {
+            return ReadAction.compute(() -> doSearch(project, pattern, filePattern));
+        } catch (Exception e) {
+            LOG.warn("SearchCodeTool search failed", e);
+            return "Error searching code: " + e.getMessage();
+        }
+    }
+
+    @NotNull
+    private String doSearch(@NotNull Project project, @NotNull Pattern pattern, String filePattern) {
         List<String> results = new ArrayList<>();
         int maxResults = 100;
 
-        try {
-            ProcessBuilder pb = new ProcessBuilder();
-            List<String> cmd = new ArrayList<>();
-            cmd.add("grep");
-            cmd.add("-rn");
-            cmd.add("--include=" + (filePattern != null ? filePattern : "*"));
-            cmd.add(patternStr);
-            cmd.add(".");
-
-            pb.directory(baseDir.toFile());
-            pb.redirectErrorStream(true);
-            pb.command(cmd);
-
-            Process process = pb.start();
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
-                String line;
-                while ((line = reader.readLine()) != null && results.size() < maxResults) {
-                    if (line.contains("Binary file") || line.isEmpty()) continue;
-                    results.add(line);
-                }
+        String searchExtension = null;
+        if (filePattern != null && !filePattern.isEmpty()) {
+            searchExtension = filePattern.replace("*.", "").replace("*", "");
+            if (searchExtension.startsWith(".")) {
+                searchExtension = searchExtension.substring(1);
             }
-            process.waitFor();
-        } catch (Exception e) {
-            return searchWithJava(baseDir, pattern, filePattern, maxResults);
+        }
+        final String ext = searchExtension;
+
+        java.nio.file.Path baseDir = context.getBaseDir();
+        VirtualFile baseVf =
+                LocalFileSystem.getInstance()
+                        .findFileByPath(baseDir.toAbsolutePath().toString());
+
+        if (baseVf == null) {
+            return "Error: cannot access project directory";
         }
 
+        VfsUtil.visitChildrenRecursively(baseVf,
+                new VirtualFileVisitor<>() {
+                    @Override
+                    public boolean visitFile(@NotNull VirtualFile file) {
+                        if (results.size() >= maxResults) return false;
+                        if (file.isDirectory()) return true;
+                        String name = file.getName().toLowerCase();
+                        if (name.startsWith(".") || name.equals("node_modules")
+                                || name.equals("build") || name.equals("target")
+                                || name.equals(".git") || name.equals(".gradle")) return true;
+
+                        if (ext != null && !ext.isEmpty()) {
+                            if (!name.endsWith("." + ext.toLowerCase())) return true;
+                        } else {
+                            if (!isSearchableFile(name)) return true;
+                        }
+
+                        try {
+                            byte[] content = file.contentsToByteArray();
+                            String text = new String(content, StandardCharsets.UTF_8);
+                            String[] lines = text.split("\n");
+
+                            String filePath = file.getPath();
+                            String basePath = project.getBasePath();
+                            String relPath = filePath.startsWith(basePath)
+                                    ? filePath.substring(basePath.length() + 1).replace('\\', '/')
+                                    : filePath;
+
+                            for (int i = 0; i < lines.length; i++) {
+                                if (results.size() >= maxResults) break;
+                                if (pattern.matcher(lines[i]).find()) {
+                                    results.add(String.format("%s:%d: %s",
+                                            relPath, i + 1, lines[i].trim()));
+                                }
+                            }
+                        } catch (Exception e) {
+                            // Skip files that can't be read
+                        }
+                        return true;
+                    }
+                });
+
         if (results.isEmpty()) {
-            return "No matches found for pattern: " + patternStr;
+            return "No matches found for pattern: " + pattern.pattern();
         }
 
         StringBuilder sb = new StringBuilder();
@@ -109,51 +163,12 @@ public class SearchCodeTool implements AgentTool {
         return sb.toString();
     }
 
-    private String searchWithJava(Path baseDir, Pattern pattern, String filePattern, int maxResults) {
-        List<String> results = new ArrayList<>();
-
-        try (var walk = Files.walk(baseDir)) {
-            walk.filter(Files::isRegularFile)
-                    .filter(p -> {
-                        String name = p.getFileName().toString();
-                        if (name.startsWith(".") || name.equals("node_modules")
-                                || name.equals("build") || name.equals("target")
-                                || name.equals("__pycache__") || name.equals(".git")) {
-                            return false;
-                        }
-                        if (filePattern != null) {
-                            String glob = filePattern.replace("*.", "\\.").replace("*", ".*");
-                            return name.matches(glob);
-                        }
-                        return true;
-                    })
-                    .forEach(p -> {
-                        if (results.size() >= maxResults) return;
-                        try {
-                            List<String> lines = Files.readAllLines(p, StandardCharsets.UTF_8);
-                            String relPath = baseDir.relativize(p).toString();
-                            for (int i = 0; i < lines.size(); i++) {
-                                if (results.size() >= maxResults) break;
-                                if (pattern.matcher(lines.get(i)).find()) {
-                                    results.add(relPath + ":" + (i + 1) + ": " + lines.get(i).trim());
-                                }
-                            }
-                        } catch (IOException ignored) {
-                        }
-                    });
-        } catch (IOException e) {
-            return "Error searching files: " + e.getMessage();
-        }
-
-        if (results.isEmpty()) {
-            return "No matches found for pattern: " + pattern.pattern();
-        }
-
-        StringBuilder sb = new StringBuilder();
-        sb.append("Found ").append(results.size()).append(" match(es):\n\n");
-        for (String line : results) {
-            sb.append(line).append("\n");
-        }
-        return sb.toString();
+    private boolean isSearchableFile(String name) {
+        return name.endsWith(".java") || name.endsWith(".kt") || name.endsWith(".py")
+                || name.endsWith(".js") || name.endsWith(".ts") || name.endsWith(".go")
+                || name.endsWith(".rs") || name.endsWith(".c") || name.endsWith(".cpp")
+                || name.endsWith(".h") || name.endsWith(".xml") || name.endsWith(".json")
+                || name.endsWith(".yml") || name.endsWith(".yaml") || name.endsWith(".gradle")
+                || name.endsWith(".kts") || name.endsWith(".properties") || name.endsWith(".md");
     }
 }

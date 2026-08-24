@@ -121,12 +121,16 @@ public class ChatPanel extends JPanel {
             LanguageModel selected = (LanguageModel) modelComboBox.getSelectedItem();
             if (selected == null) return;
 
-            if ("loaded".equals(selected.getStatus())) {
-                setStatus("Ready");
+            String modelName = selected.getModelName();
+            String currentStatus = selected.getStatus();
+            System.out.println("[MyPlugin] Model selected: " + modelName + ", cached status: " + currentStatus);
+
+            if ("loaded".equals(currentStatus)) {
+                System.out.println("[MyPlugin] Model already marked loaded, skipping load");
+                setStatus("Ready - " + modelName);
                 return;
             }
 
-            String modelName = selected.getModelName();
             new Thread(() -> {
                 try {
                     LlamaSSEClient sse = LlamaSSEClient.getInstance();
@@ -164,14 +168,18 @@ public class ChatPanel extends JPanel {
                         }
                     }));
 
+                    System.out.println("[MyPlugin] Loading model: " + modelName);
                     sse.prepareWait(modelName);
                     LlamaModelService.getInstance().loadModel(modelName);
                     boolean loaded = sse.waitForModel(120);
+                    System.out.println("[MyPlugin] Model load result: " + loaded);
                     SwingUtilities.invokeLater(() -> {
                         modelComboBox.setEnabled(true);
                         setStatus(loaded ? "Ready" : "Load timeout");
                     });
                 } catch (Exception ex) {
+                    System.err.println("[MyPlugin] Load failed: " + ex.getMessage());
+                    ex.printStackTrace();
                     SwingUtilities.invokeLater(() -> {
                         modelComboBox.setEnabled(true);
                         setStatus("Load failed: " + ex.getMessage());
@@ -631,6 +639,7 @@ public class ChatPanel extends JPanel {
 
         ThinkingPanel thinkingPanel = createThinkingPanel();
         thinkingPanel.startStreaming();
+        thinkingPanel.expand();
         messagesPanel.add(thinkingPanel);
         messagesPanel.revalidate();
         scrollToBottom(scrollPane);
@@ -641,6 +650,14 @@ public class ChatPanel extends JPanel {
             StringBuilder thinkingBuf = new StringBuilder();
             try {
                 agentExecutor.execute(conv.getMessages(), modelName, new AgentExecutor.AgentEvent() {
+                    @Override
+                    public void onThinking(String text) {
+                        String entry = "[Thinking] " + text + "\n";
+                        thinkingBuf.append(entry);
+                        thinkingPanel.appendThinking(entry);
+                        SwingUtilities.invokeLater(() -> scrollToBottom(scrollPane));
+                    }
+
                     @Override
                     public void onToolCall(String toolName, String arguments) {
                         String entry = "[Tool Call] " + toolName + ": " + arguments + "\n";
@@ -658,10 +675,20 @@ public class ChatPanel extends JPanel {
                     }
 
                     @Override
-                    public void onAnswer(String text) {}
+                    public void onAnswer(String text) {
+                        String entry = "[Answer] " + text + "\n";
+                        thinkingBuf.append(entry);
+                        thinkingPanel.appendThinking(entry);
+                        SwingUtilities.invokeLater(() -> scrollToBottom(scrollPane));
+                    }
 
                     @Override
-                    public void onError(String error) {}
+                    public void onError(String error) {
+                        String entry = "[Error] " + error + "\n";
+                        thinkingBuf.append(entry);
+                        thinkingPanel.appendThinking(entry);
+                        SwingUtilities.invokeLater(() -> scrollToBottom(scrollPane));
+                    }
                 });
 
                 thinkingPanel.finishStreaming();
