@@ -1,6 +1,7 @@
 package com.example.myplugin.agent;
 
 import com.example.myplugin.agent.tools.*;
+import com.example.myplugin.openspec.tool.*;
 import com.example.myplugin.model.Conversation;
 import com.example.myplugin.settings.PluginStateService;
 import com.google.gson.Gson;
@@ -116,7 +117,13 @@ public class AgentExecutor {
                 new GitDiffTool(ctx),
                 new GitLogTool(ctx),
                 new RunGradleTaskTool(ctx),
-                new CheckInspectionsTool(ctx)
+                new CheckInspectionsTool(ctx),
+                new ReadSpecTool(ctx),
+                new ListSpecsTool(ctx),
+                new ListChangesTool(ctx),
+                new CreateChangeTool(ctx),
+                new ArchiveChangeTool(ctx),
+                new SDDStatusTool(ctx)
         );
 
         toolSpecs = new ArrayList<>();
@@ -168,6 +175,12 @@ public class AgentExecutor {
         m.put("get_project_structure", Set.of("project structure", "module", "modules", "source root"));
         m.put("write_file", Set.of("write", "create file", "new file", "create"));
         m.put("edit_file", Set.of("edit", "modify", "change file", "update file", "replace"));
+        m.put("read_spec", Set.of("spec", "specification", "read spec", "requirement spec"));
+        m.put("list_specs", Set.of("list spec", "all spec", "specs", "show spec"));
+        m.put("list_changes", Set.of("change", "changes", "active change", "list change"));
+        m.put("create_change", Set.of("new change", "create change", "start change", "propose"));
+        m.put("archive_change", Set.of("archive", "finish change", "complete change", "merge spec"));
+        m.put("sdd_status", Set.of("sdd", "status", "openspec status", "sdd status"));
         TOOL_KEYWORDS = Collections.unmodifiableMap(m);
     }
 
