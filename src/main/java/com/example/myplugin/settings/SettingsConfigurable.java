@@ -31,7 +31,8 @@ public class SettingsConfigurable implements Configurable {
                 || settingsComponent.getTopP() != state.getTopP()
                 || settingsComponent.getMaxTokens() != state.getMaxTokens()
                 || settingsComponent.getTimeout() != state.getTimeout()
-                || settingsComponent.isStreamMode() != state.isStreamMode();
+                || settingsComponent.isStreamMode() != state.isStreamMode()
+                || settingsComponent.getMaxContextMessages() != state.getAgentMaxContextMessages();
     }
 
     @Override
@@ -44,6 +45,7 @@ public class SettingsConfigurable implements Configurable {
         state.setMaxTokens(settingsComponent.getMaxTokens());
         state.setTimeout(settingsComponent.getTimeout());
         state.setStreamMode(settingsComponent.isStreamMode());
+        state.setAgentMaxContextMessages(settingsComponent.getMaxContextMessages());
     }
 
     @Override
@@ -56,6 +58,7 @@ public class SettingsConfigurable implements Configurable {
         settingsComponent.setMaxTokens(state.getMaxTokens());
         settingsComponent.setTimeout(state.getTimeout());
         settingsComponent.setStreamMode(state.isStreamMode());
+        settingsComponent.setMaxContextMessages(state.getAgentMaxContextMessages());
     }
 
     @Override

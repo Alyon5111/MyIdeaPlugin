@@ -17,6 +17,7 @@ public class SettingsComponent {
     private final JBTextField topPText = new JBTextField();
     private final JBTextField maxTokensText = new JBTextField();
     private final JBTextField timeoutText = new JBTextField();
+    private final JBTextField maxContextMessagesText = new JBTextField();
     private final JBCheckBox streamModeCheckBox = new JBCheckBox("Enable stream mode", true);
 
     public SettingsComponent() {
@@ -27,6 +28,7 @@ public class SettingsComponent {
         topPText.setText(String.valueOf(state.getTopP()));
         maxTokensText.setText(String.valueOf(state.getMaxTokens()));
         timeoutText.setText(String.valueOf(state.getTimeout()));
+        maxContextMessagesText.setText(String.valueOf(state.getAgentMaxContextMessages()));
         streamModeCheckBox.setSelected(state.isStreamMode());
 
         panel = FormBuilder.createFormBuilder()
@@ -36,6 +38,7 @@ public class SettingsComponent {
                 .addLabeledComponent(new JBLabel("Top P (0.0-1.0):"), topPText)
                 .addLabeledComponent(new JBLabel("Max Output Tokens:"), maxTokensText)
                 .addLabeledComponent(new JBLabel("Timeout (seconds):"), timeoutText)
+                .addLabeledComponent(new JBLabel("Context Window Messages:"), maxContextMessagesText)
                 .addComponent(streamModeCheckBox)
                 .addComponentFillVertically(new JPanel(), 0)
                 .getPanel();
@@ -107,6 +110,18 @@ public class SettingsComponent {
 
     public void setTimeout(int value) {
         timeoutText.setText(String.valueOf(value));
+    }
+
+    public int getMaxContextMessages() {
+        try {
+            return Integer.parseInt(maxContextMessagesText.getText());
+        } catch (NumberFormatException e) {
+            return 6;
+        }
+    }
+
+    public void setMaxContextMessages(int value) {
+        maxContextMessagesText.setText(String.valueOf(value));
     }
 
     public boolean isStreamMode() {

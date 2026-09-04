@@ -11,6 +11,8 @@ import com.example.myplugin.model.CustomChatModel;
 import com.example.myplugin.model.LanguageModel;
 import com.example.myplugin.model.ModelProvider;
 import com.example.myplugin.service.ConversationService;
+import com.example.myplugin.agent.memory.AgentMemoryService;
+import com.example.myplugin.agent.memory.semanticmemory.ConversationSemanticMemory;
 import com.example.myplugin.settings.PluginStateService;
 import com.intellij.openapi.project.Project;
 import com.intellij.ui.components.JBScrollPane;
@@ -49,10 +51,12 @@ public class ChatPanel extends JPanel {
     private AgentExecutor agentExecutor;
     private Thread agentThread;
     private boolean programmaticTabChange = false;
+    private Project project;
 
     public ChatPanel(Project project, ConversationService conversationService) {
         super(new BorderLayout());
         this.conversationService = conversationService;
+        this.project = project;
         if (project != null) {
             agentExecutor = new AgentExecutor(project);
         }
@@ -698,6 +702,20 @@ public class ChatPanel extends JPanel {
                 agentMsg.setContent(finalAnswer != null ? finalAnswer : "");
                 conv.getMessages().add(agentMsg);
                 conversationService.save();
+
+                if (project != null && PluginStateService.getInstance().isMemoryEnabled()) {
+                    try {
+                        AgentMemoryService memoryService = new AgentMemoryService(project);
+                        ConversationSemanticMemory semantic = new ConversationSemanticMemory(memoryService);
+                        int stored = semantic.extractAndStore(conv);
+                        if (stored > 0) {
+                            thinkingBuf.append("[Memory] Extracted ").append(stored).append(" memory entr").append(stored == 1 ? "y" : "ies").append("\n");
+                            thinkingPanel.appendThinking("[Memory] Extracted " + stored + " memory entr" + (stored == 1 ? "y" : "ies") + "\n");
+                        }
+                    } catch (Exception e) {
+                        thinkingBuf.append("[Memory] Extraction failed: ").append(e.getMessage()).append("\n");
+                    }
+                }
 
                 SwingUtilities.invokeLater(() -> {
                     rebuildMessages(messagesPanel, conv);
