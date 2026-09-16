@@ -25,6 +25,15 @@ class TestAnalyzerTest {
     }
 
     @Test
+    void analyzeBuildFailedWithAssertMismatch() {
+        String output = "BUILD FAILED\n1 test failed: expected not-found error but got NPE";
+        TestAnalyzer.Analysis analysis = TestAnalyzer.analyze(output);
+
+        assertEquals(TestAnalyzer.Outcome.TEST_FAILS_AS_EXPECTED, analysis.getOutcome());
+        assertTrue(analysis.isExpectedFailure());
+    }
+
+    @Test
     void analyzeBuildFailedWithClassNotFound() {
         String output = "> Task :test FAILED\nBUILD FAILED\nerror: class not found: UserService";
         TestAnalyzer.Analysis analysis = TestAnalyzer.analyze(output);

@@ -1,17 +1,38 @@
 package com.example.myplugin.agent.pipeline;
 
+import com.example.myplugin.agent.AgentContext;
 import com.example.myplugin.agent.AgentTool;
+import com.example.myplugin.agent.plan.PlanGenerator;
+import com.example.myplugin.agent.plan.PlanStore;
 import com.google.gson.JsonObject;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
 import dev.langchain4j.model.chat.request.json.JsonStringSchema;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.Locale;
+
 public class SDDPipelineTool implements AgentTool {
 
+    private static final String SPECS_REL = "openspec/specs";
+
     private final PipelineService pipeline;
+    private final Path baseDir;
 
     public SDDPipelineTool(PipelineService pipeline) {
+        this(pipeline, null);
+    }
+
+    public SDDPipelineTool(AgentContext context, PipelineService pipeline) {
+        this(pipeline, context != null ? context.getBaseDir() : null);
+    }
+
+    SDDPipelineTool(PipelineService pipeline, Path baseDir) {
         this.pipeline = pipeline;
+        this.baseDir = baseDir;
     }
 
     @Override
@@ -38,10 +59,13 @@ public class SDDPipelineTool implements AgentTool {
                     .description("OpenSpec domain name (for start)")
                     .build())
                 .addProperty("requirement", JsonStringSchema.builder()
-                    .description("The requirement text flowing through the pipeline (for start)")
+                    .description("The requirement text flowing through the pipeline. Write it in English; this becomes the body of the generated spec doc (for start)")
+                    .build())
+                .addProperty("note_zh", JsonStringSchema.builder()
+                    .description("Optional Chinese remark (备注) attached to the generated spec doc. The spec body stays in English (for start)")
                     .build())
                 .addProperty("pipeline_id", JsonStringSchema.builder()
-                    .description("Pipeline instance id (for most actions)")
+                    .description("Pipeline instance id (for most actions; optional for status - when omitted, status prints every active instance with its ID)")
                     .build())
                 .addProperty("plan_file", JsonStringSchema.builder()
                     .description("Plan file name in docs/plans (for advance_plan)")
@@ -59,10 +83,32 @@ public class SDDPipelineTool implements AgentTool {
             .build();
     }
 
+    private String inferAction(JsonObject arguments) {
+        if (arguments.has("change_name")) return "link_change";
+        if (arguments.has("plan_steps")) return "add_step";
+        if (arguments.has("plan_file")) return "advance_plan";
+        if (arguments.has("step_index")) {
+            String id = arguments.has("pipeline_id") ? arguments.get("pipeline_id").getAsString() : "";
+            SpecPipelineInstance instance = pipeline.getById(id);
+            int stepIndex = arguments.get("step_index").getAsInt();
+            if (instance != null && instance.getCurrentStage() == PipelineStage.TDD
+                    && instance.getCurrentStepIndex() == stepIndex && !instance.allStepsDone()) {
+                return "complete_tdd";
+            }
+            return "start_tdd";
+        }
+        if (arguments.has("requirement")) return "start";
+        if (arguments.has("pipeline_id")) return "status";
+        return "list";
+    }
+
     @Override
     public String execute(JsonObject arguments) {
         try {
-            String action = arguments.has("action") ? arguments.get("action").getAsString() : "list";
+            String action = arguments.has("action") ? arguments.get("action").getAsString() : "";
+            if (action.isEmpty()) {
+                action = inferAction(arguments);
+            }
             switch (action.toLowerCase()) {
                 case "start":
                     return start(arguments);
@@ -98,6 +144,7 @@ public class SDDPipelineTool implements AgentTool {
             return "Error: 'requirement' is required to start a pipeline";
         }
         String specDomain = arguments.has("spec_domain") ? arguments.get("spec_domain").getAsString() : "";
+        String noteZh = arguments.has("note_zh") ? arguments.get("note_zh").getAsString() : "";
 
         SpecPipelineInstance instance = pipeline.create(specDomain, requirement);
 
@@ -106,8 +153,74 @@ public class SDDPipelineTool implements AgentTool {
         sb.append("Pipeline ID: ").append(instance.getId()).append("\n");
         sb.append("Requirement: ").append(requirement).append("\n");
         sb.append("Stage: SPEC\n\n");
+
+        String specDoc = writeSpecDoc(specDomain, requirement, noteZh);
+        if (specDoc != null) {
+            sb.append("Spec doc: ").append(specDoc).append("\n");
+        }
+        if (specDomain.isEmpty()) {
+            sb.append("Note: no spec_domain given, no spec doc generated.\n");
+        }
+
         sb.append("Keep this pipeline_id to advance it through PLAN -> TDD -> Change.");
         return sb.toString();
+    }
+
+    private String writeSpecDoc(String specDomain, String requirement, String noteZh) {
+        if (baseDir == null || specDomain.trim().isEmpty()) {
+            return null;
+        }
+        try {
+            Path specDir = baseDir.resolve(SPECS_REL).resolve(specDomain.trim());
+            Path specFile = specDir.resolve("spec.md");
+            if (Files.exists(specFile)) {
+                return SPECS_REL + "/" + specDomain.trim() + "/spec.md (already exists)";
+            }
+            Files.createDirectories(specDir);
+            Files.writeString(specFile, buildSpecContent(specDomain.trim(), requirement, noteZh), StandardCharsets.UTF_8);
+            return SPECS_REL + "/" + specDomain.trim() + "/spec.md";
+        } catch (Exception e) {
+            return "Error writing spec doc: " + e.getMessage();
+        }
+    }
+
+    static String buildSpecContent(String domain, String requirement, String noteZh) {
+        String[] words = domain.split("[^A-Za-z0-9]+");
+        StringBuilder title = new StringBuilder();
+        for (String w : words) {
+            if (w.isEmpty()) continue;
+            title.append(Character.toUpperCase(w.charAt(0)));
+            if (w.length() > 1) title.append(w.substring(1).toLowerCase(Locale.ROOT));
+            title.append(' ');
+        }
+        String cleanTitle = title.toString().trim();
+        if (cleanTitle.isEmpty()) cleanTitle = domain;
+
+        String req = requirement.trim();
+        String reqSentence = req.endsWith(".") ? req : req + ".";
+
+        String body = "# " + cleanTitle + "\n" +
+                      "\n" +
+                      "## Purpose\n" +
+                      "\n" +
+                      "Spec-driven development starts here. This spec captures the requirement that flows\n" +
+                      "through the pipeline SPEC -> PLAN -> TDD -> Change -> DONE.\n" +
+                      "\n" +
+                      "## Requirements\n" +
+                      "\n" +
+                      "### Requirement: " + req + "\n" +
+                      "\n" +
+                      "The system SHALL " + reqSentence + "\n" +
+                      "\n" +
+                      "#### Scenario: Satisfy the requirement\n" +
+                      "\n" +
+                      "- WHEN the pipeline executes the requirement\n" +
+                      "- THEN the requirement is implemented and verified via TDD\n";
+
+        if (noteZh != null && !noteZh.trim().isEmpty()) {
+            body += "\n> Note (Chinese): " + noteZh.trim() + "\n";
+        }
+        return body;
     }
 
     private String addStep(JsonObject arguments) {
@@ -143,6 +256,13 @@ public class SDDPipelineTool implements AgentTool {
             return "Add plan steps first (action=add_step) or you can pass plan_steps with advance_plan.";
         }
 
+        if (planFile.isEmpty() && baseDir != null) {
+            String generated = generatePlanFile(instance);
+            if (generated != null) {
+                planFile = generated;
+            }
+        }
+
         pipeline.linkPlan(id, planFile);
         pipeline.advance(id, PipelineStage.PLAN, planFile.isEmpty() ? "plan ready" : planFile);
 
@@ -152,6 +272,21 @@ public class SDDPipelineTool implements AgentTool {
                 "Steps: " + instance.getPlanSteps().size() + "\n\n" +
                 "Use 'generate_plan' to persist the plan if not already done.\n" +
                 "Next: call start_tdd with step_index=0 for the first step.";
+    }
+
+    private String generatePlanFile(SpecPipelineInstance instance) {
+        try {
+            String source = instance.getRequirement();
+            PlanGenerator generator = new PlanGenerator();
+            String content = generator.generateFromDescription(source, baseDir.toString());
+            String slugBase = (instance.getSpecDomain() != null && !instance.getSpecDomain().trim().isEmpty())
+                    ? instance.getSpecDomain().trim() : source;
+            String fileName = generator.getPlanFileName(slugBase);
+            new PlanStore(baseDir.toString()).savePlan(content, fileName);
+            return fileName;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private String startTdd(JsonObject arguments) {
@@ -236,7 +371,18 @@ public class SDDPipelineTool implements AgentTool {
 
     private String status(JsonObject arguments) {
         String id = requireId(arguments);
-        if (id == null) return "Error: 'pipeline_id' is required";
+        if (id == null) {
+            List<SpecPipelineInstance> active = pipeline.getActive();
+            if (active.isEmpty()) {
+                return "No active pipeline instances. Use pipeline.start to begin.";
+            }
+            StringBuilder sb = new StringBuilder();
+            for (SpecPipelineInstance i : active) {
+                if (sb.length() > 0) sb.append("\n\n");
+                sb.append(pipeline.formatDetail(i.getId()));
+            }
+            return sb.toString();
+        }
         return pipeline.formatDetail(id);
     }
 

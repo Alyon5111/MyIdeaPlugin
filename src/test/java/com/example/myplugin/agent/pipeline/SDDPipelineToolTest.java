@@ -2,6 +2,10 @@ package com.example.myplugin.agent.pipeline;
 
 import com.google.gson.JsonObject;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -10,6 +14,9 @@ class SDDPipelineToolTest {
     private SDDPipelineTool newTool() {
         return new SDDPipelineTool(PipelineService.inMemory());
     }
+
+    @TempDir
+    Path tempDir;
 
     @Test
     void testName() {
@@ -37,6 +44,68 @@ class SDDPipelineToolTest {
         args.addProperty("action", "start");
         String result = tool.execute(args);
         assertTrue(result.contains("requirement"));
+    }
+
+    @Test
+    void testStartWritesSpecDocToDisk() throws Exception {
+        SDDPipelineTool tool = new SDDPipelineTool(PipelineService.inMemory(), tempDir);
+        JsonObject args = new JsonObject();
+        args.addProperty("action", "start");
+        args.addProperty("requirement", "Users can log in");
+        args.addProperty("spec_domain", "auth");
+
+        String result = tool.execute(args);
+        assertTrue(result.contains("Spec doc: openspec/specs/auth/spec.md"), result);
+
+        Path specFile = tempDir.resolve("openspec/specs/auth/spec.md");
+        assertTrue(Files.exists(specFile), "spec.md should be written to disk");
+        String content = Files.readString(specFile);
+        assertTrue(content.contains("# Auth"), content);
+        assertTrue(content.contains("## Purpose"), content);
+        assertTrue(content.contains("### Requirement: Users can log in"), content);
+        assertTrue(content.contains("#### Scenario"), content);
+    }
+
+    @Test
+    void testStartWithExistingSpecDocDoesNotOverwrite() throws Exception {
+        Path specDir = tempDir.resolve("openspec/specs/auth");
+        Files.createDirectories(specDir);
+        Files.writeString(specDir.resolve("spec.md"), "# Original");
+
+        SDDPipelineTool tool = new SDDPipelineTool(PipelineService.inMemory(), tempDir);
+        JsonObject args = new JsonObject();
+        args.addProperty("action", "start");
+        args.addProperty("requirement", "Users can log in");
+        args.addProperty("spec_domain", "auth");
+
+        String result = tool.execute(args);
+        assertTrue(result.contains("already exists"), result);
+        assertEquals("# Original", Files.readString(specDir.resolve("spec.md")));
+    }
+
+    @Test
+    void testStartWithoutSpecDomainSkipsSpecDoc() {
+        SDDPipelineTool tool = new SDDPipelineTool(PipelineService.inMemory(), tempDir);
+        JsonObject args = new JsonObject();
+        args.addProperty("action", "start");
+        args.addProperty("requirement", "Users can log in");
+
+        String result = tool.execute(args);
+        assertTrue(result.contains("no spec_domain given"), result);
+        assertFalse(Files.exists(tempDir.resolve("openspec/specs")));
+    }
+
+    @Test
+    void buildSpecContentAddsOptionalChineseNote() {
+        String content = SDDPipelineTool.buildSpecContent("auth", "Users can log in", "用户登录");
+        assertTrue(content.contains("### Requirement: Users can log in"), content);
+        assertTrue(content.contains("> Note (Chinese): 用户登录"), content);
+    }
+
+    @Test
+    void buildSpecContentOmitsChineseNoteWhenAbsent() {
+        String content = SDDPipelineTool.buildSpecContent("auth", "Users can log in", "");
+        assertFalse(content.contains("Note (Chinese)"), content);
     }
 
     @Test
@@ -73,6 +142,29 @@ class SDDPipelineToolTest {
         String advResult = tool.execute(adv);
         assertTrue(advResult.contains("Add plan steps"), advResult);
         assertEquals(PipelineStage.SPEC, service.getById(pi.getId()).getCurrentStage());
+    }
+
+    @Test
+    void testAdvancePlanGeneratesPlanFileWhenMissing() throws Exception {
+        PipelineService service = PipelineService.inMemory();
+        SDDPipelineTool tool = new SDDPipelineTool(service, tempDir);
+        SpecPipelineInstance pi = service.create("agent-tools", "Add export plan tool");
+        service.addPlanStep(pi.getId(), "step one");
+
+        JsonObject adv = new JsonObject();
+        adv.addProperty("action", "advance_plan");
+        adv.addProperty("pipeline_id", pi.getId());
+        String advResult = tool.execute(adv);
+        assertEquals(PipelineStage.PLAN, service.getById(pi.getId()).getCurrentStage());
+        assertTrue(advResult.contains("Plan file: "), advResult);
+        assertTrue(advResult.contains("-plan.md"), advResult);
+
+        Path plansDir = tempDir.resolve("docs/plans");
+        assertTrue(Files.exists(plansDir), "plans dir should exist");
+        try (var stream = Files.list(plansDir)) {
+            assertTrue(stream.anyMatch(p -> p.getFileName().toString().endsWith("-plan.md")),
+                    "a plan file should be written to docs/plans");
+        }
     }
 
     @Test
@@ -190,5 +282,46 @@ class SDDPipelineToolTest {
         args.addProperty("pipeline_id", pi.getId());
         String result = tool.execute(args);
         assertTrue(result.contains("tdd_enforcer"), result);
+    }
+
+    @Test
+    void testStatusWithoutIdPrintsAllActiveWithIds() {
+        PipelineService service = PipelineService.inMemory();
+        SDDPipelineTool tool = new SDDPipelineTool(service);
+        SpecPipelineInstance pi1 = service.create("auth", "req1");
+        SpecPipelineInstance pi2 = service.create("agent-tools", "req2");
+
+        JsonObject args = new JsonObject();
+        args.addProperty("action", "status");
+        String result = tool.execute(args);
+        assertTrue(result.contains("ID: " + pi1.getId()), result);
+        assertTrue(result.contains("ID: " + pi2.getId()), result);
+        assertTrue(result.contains("PIPELINE INSTANCE"), result);
+    }
+
+    @Test
+    void testStatusWithoutIdWhenEmpty() {
+        PipelineService service = PipelineService.inMemory();
+        SDDPipelineTool tool = new SDDPipelineTool(service);
+
+        JsonObject args = new JsonObject();
+        args.addProperty("action", "status");
+        String result = tool.execute(args);
+        assertTrue(result.contains("No active pipeline instances"), result);
+    }
+
+    @Test
+    void testStatusWithoutIdExcludesDone() {
+        PipelineService service = PipelineService.inMemory();
+        SDDPipelineTool tool = new SDDPipelineTool(service);
+        SpecPipelineInstance active = service.create("auth", "req1");
+        SpecPipelineInstance done = service.create("auth", "req2");
+        service.advance(done.getId(), PipelineStage.DONE, "d");
+
+        JsonObject args = new JsonObject();
+        args.addProperty("action", "status");
+        String result = tool.execute(args);
+        assertTrue(result.contains("ID: " + active.getId()), result);
+        assertFalse(result.contains("ID: " + done.getId()), result);
     }
 }

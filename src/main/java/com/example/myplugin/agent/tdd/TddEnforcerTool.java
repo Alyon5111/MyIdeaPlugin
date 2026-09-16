@@ -63,7 +63,7 @@ public class TddEnforcerTool implements AgentTool {
     @Override
     public String execute(JsonObject arguments) {
         try {
-            String action = arguments.has("action") ? arguments.get("action").getAsString() : "get_status";
+            String action = arguments.has("action") ? arguments.get("action").getAsString() : inferAction(arguments);
 
             switch (action) {
                 case "start_cycle":
@@ -94,6 +94,53 @@ public class TddEnforcerTool implements AgentTool {
         }
     }
 
+    private String inferAction(JsonObject arguments) {
+        StringBuilder joined = new StringBuilder();
+        for (String key : arguments.keySet()) {
+            if (arguments.get(key).isJsonPrimitive()) {
+                joined.append('\n').append(arguments.get(key).getAsString());
+            }
+        }
+        String text = joined.toString().toLowerCase();
+
+        String[] actions = {
+            "link_pipeline",
+            "check_rationalization",
+            "mark_refactor",
+            "start_cycle",
+            "verify_test",
+            "write_test",
+            "write_code",
+            "verify_code",
+            "cancel"
+        };
+        String[] patterns = {
+            "link\\s*_?pipeline",
+            "rationali[sz]",
+            "mark\\s*_?refactor|refactor\\s*(done|complete)",
+            "start\\s*_?cycle|begin\\s*a?\\s*cycle|new\\s*cycle|start\\s*task|start\\s*a\\s*new",
+            "verif",
+            "write\\s*_?test|write\\s*a?\\s*failing\\s*test|wrote\\s*a?\\s*failing\\s*test|writing\\s*a?\\s*failing\\s*test|(\\d+)\\s*tests?\\s*(failed|fail)",
+            "write\\s*_?code|minimal\\s*code|implement",
+            "tests?\\s+passed|build\\s+successful|all\\s+tests?\\s+pass",
+            "cancel"
+        };
+
+        for (int i = 0; i < actions.length; i++) {
+            if (java.util.regex.Pattern.compile(patterns[i]).matcher(text).find()) {
+                return actions[i];
+            }
+        }
+
+        if (arguments.has("pipeline_id")) {
+            if (arguments.has("task") && !arguments.get("task").getAsString().trim().isEmpty()) {
+                return "start_cycle";
+            }
+            return "link_pipeline";
+        }
+        return "get_status";
+    }
+
     private String startCycle(JsonObject arguments) {
         if (!stateMachine.isIdle() && !stateMachine.isDone()) {
             return "Error: A cycle is already in progress (state: " + stateMachine.getCurrentState() + "). Cancel it first or complete it.";
@@ -102,6 +149,16 @@ public class TddEnforcerTool implements AgentTool {
         String task = arguments.has("task") ? arguments.get("task").getAsString() : "Unnamed task";
         stateMachine.startCycle(task);
         redFlagDetector.clear();
+
+        // Optional pipeline linking in the same call: equivalent to link_pipeline. Weak models
+        // (qwen-3-27b) tend to pass pipeline_id here instead of calling link_pipeline, so honor it.
+        String pipelineId = arguments.has("pipeline_id") ? arguments.get("pipeline_id").getAsString() : null;
+        if (pipelineId != null && !pipelineId.isEmpty()) {
+            if (pipeline == null || pipeline.getById(pipelineId) == null) {
+                return "Error: Pipeline instance not found: " + pipelineId;
+            }
+            this.linkedPipelineId = pipelineId;
+        }
 
         return "=== TDD Cycle Started ===\n" +
             "Task: " + task + "\n" +

@@ -177,11 +177,12 @@ public class PipelineService {
         synchronized (lock) {
             StringBuilder sb = new StringBuilder();
             sb.append("=== SPEC-DRIVEN PIPELINE ===\n");
-            if (instances.isEmpty()) {
-                sb.append("No pipeline instances. Use pipeline.start to begin.\n");
+            List<SpecPipelineInstance> active = getActive();
+            if (active.isEmpty()) {
+                sb.append("No active pipeline instances. Use pipeline.start to begin.\n");
                 return sb.toString();
             }
-            for (SpecPipelineInstance i : instances) {
+            for (SpecPipelineInstance i : active) {
                 sb.append("- [").append(i.getCurrentStage()).append("] ").append(i.getRequirement());
                 if (i.getSpecDomain() != null && !i.getSpecDomain().isEmpty()) {
                     sb.append(" (spec: ").append(i.getSpecDomain()).append(")");

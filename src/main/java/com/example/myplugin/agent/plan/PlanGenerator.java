@@ -146,7 +146,14 @@ public class PlanGenerator {
     }
 
     public String getPlanFileName(String featureName) {
-        String slug = featureName.toLowerCase().replaceAll("[^a-z0-9]+", "-").replaceAll("^-|-$", "");
+        if (featureName == null) featureName = "plan";
+        String slug = featureName.toLowerCase().replaceAll("[^a-z0-9]+", "-").replaceAll("-+", "-").replaceAll("^-|-$", "");
+        if (slug.length() > 60) {
+            slug = slug.substring(0, 60).replaceAll("-+$", "");
+        }
+        if (slug.isEmpty()) {
+            slug = "plan";
+        }
         return LocalDate.now().format(DATE_FMT) + "-" + slug + "-plan.md";
     }
 }

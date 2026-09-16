@@ -3,6 +3,7 @@ package com.example.myplugin.agent;
 import com.example.myplugin.agent.tools.*;
 import com.example.myplugin.agent.brainstorm.BrainstormTool;
 import com.example.myplugin.agent.plan.GeneratePlanTool;
+import com.example.myplugin.agent.plan.ExportPlanTool;
 import com.example.myplugin.agent.tdd.TddEnforcerTool;
 import com.example.myplugin.agent.debugging.SystematicDebuggingTool;
 import com.example.myplugin.agent.verification.VerificationGateTool;
@@ -114,6 +115,7 @@ public class AgentExecutor {
     private volatile boolean cancelled = false;
     private String lastAnswer;
     private final AgentMemoryService memoryService;
+    private String strongForcedTool;
 
     public AgentExecutor(Project project) {
         AgentContext ctx = new AgentContext(project);
@@ -149,6 +151,7 @@ public class AgentExecutor {
                 new SDDStatusTool(ctx),
                 new BrainstormTool(ctx),
                 new GeneratePlanTool(ctx),
+                new ExportPlanTool(ctx),
                 new TddEnforcerTool(ctx, pipelineService),
                 new SystematicDebuggingTool(),
                 new VerificationGateTool(),
@@ -160,7 +163,7 @@ public class AgentExecutor {
                 new ProjectKnowledgeTool(memoryService),
                 new ConversationMemoryTool(memoryService),
                 new MemoryStatusTool(memoryService, toolMemory),
-                new SDDPipelineTool(pipelineService)
+                new SDDPipelineTool(ctx, pipelineService)
         );
 
         toolSpecs = new ArrayList<>();
@@ -236,10 +239,50 @@ public class AgentExecutor {
         TOOL_KEYWORDS = Collections.unmodifiableMap(m);
     }
 
+    /**
+     * Strong directive phrases that must dispatch to exactly one tool. Matching is substring-based
+     * on the lowercased user message, so include CJK fragments for Chinese instructions too.
+     * When any of these is present, the candidate set is narrowed to exactly the owning tool so a
+     * weak model (qwen-3-27b) cannot drift toward core/exploration tools.
+     */
+    private static final Map<String, Set<String>> STRONG_TOOL_KEYWORDS;
+    static {
+        Map<String, Set<String>> m = new HashMap<>();
+        m.put("generate_plan", Set.of("generate plan", "create plan", "write plan", "implementation plan", "plan document", "\u751f\u6210\u8ba1\u5212"));
+        m.put("export_plan", Set.of("export plan", "\u5bfc\u51fa\u8ba1\u5212", "\u5bfc\u51fa\u8fd9\u4e2a\u8ba1\u5212", "export_plan"));
+        m.put("tdd_enforcer", Set.of("tdd start", "tdd cycle", "tdd start_cycle", "tdd write_test", "tdd verify_test", "tdd write_code", "tdd verify_code", "tdd mark_refactor", "tdd get_status", "tdd cancel", "tdd link_pipeline", "red green refactor", "start_cycle", "link_pipeline", "\u542f\u52a8 tdd", "tdd \u5faa\u73af", "\u5f00\u59cb tdd", "\u5173\u8054\u5230\u6d41\u6c34\u7ebf"));
+        m.put("sdd_pipeline", Set.of("pipeline start", "pipeline add_step", "pipeline advance_plan", "pipeline start_tdd", "pipeline complete_tdd", "pipeline link_change", "pipeline complete", "pipeline status", "pipeline list", "pipeline next_step"));
+        m.put("create_change", Set.of("create_change", "create change", "new change", "start a change", "openspec change", "\u521b\u5efa\u53d8\u66f4"));
+        m.put("archive_change", Set.of("archive change", "complete change", "\u5f52\u6863\u53d8\u66f4"));
+        STRONG_TOOL_KEYWORDS = Collections.unmodifiableMap(m);
+    }
+
     private List<AgentTool> selectToolsForMessage(String userMessage) {
         String lower = userMessage.toLowerCase();
-        Set<String> selectedNames = new HashSet<>(CORE_TOOLS);
+        Set<String> selectedNames = new HashSet<>();
 
+        // Strong directive phrases force exactly the owning tool into the candidate set. For weak
+        // tool-following models (qwen-3-27b) even CORE_TOOLS are excluded: they drifted to
+        // read_file/list_files instead of generate_plan, so the forced tool is the ONLY option.
+        for (Map.Entry<String, Set<String>> entry : STRONG_TOOL_KEYWORDS.entrySet()) {
+            for (String keyword : entry.getValue()) {
+                if (lower.contains(keyword)) {
+                    selectedNames.add(entry.getKey());
+                    break;
+                }
+            }
+        }
+        if (!selectedNames.isEmpty()) {
+            if (selectedNames.size() == 1) {
+                strongForcedTool = selectedNames.iterator().next();
+            }
+            return selectedNames.stream()
+                    .map(toolMap::get)
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.toList());
+        }
+
+        selectedNames.addAll(CORE_TOOLS);
         for (Map.Entry<String, Set<String>> entry : TOOL_KEYWORDS.entrySet()) {
             for (String keyword : entry.getValue()) {
                 if (lower.contains(keyword)) {
@@ -298,6 +341,7 @@ public class AgentExecutor {
     public String execute(List<Conversation.ChatMessage> history, String modelName, AgentEvent event) {
         cancelled = false;
         lastAnswer = null;
+        strongForcedTool = null;
         model = createModel(modelName);
 
         String lastUserMsg = "";
@@ -417,6 +461,13 @@ public class AgentExecutor {
                     }
                 } else {
                     String text = aiMessage.text();
+                    if (i == 0 && strongForcedTool != null) {
+                        event.onThinking("Strong tool '" + strongForcedTool + "' forced but model returned text without calling it; nudging to invoke the tool");
+                        messages.add(UserMessage.from(
+                                "The available tool '" + strongForcedTool + "' is REQUIRED for this request. " +
+                                "Do NOT answer in plain text. Call '" + strongForcedTool + "' with the appropriate action now."));
+                        continue;
+                    }
                     if (text != null && !text.isEmpty()) {
                         event.onAnswer(text);
                     }

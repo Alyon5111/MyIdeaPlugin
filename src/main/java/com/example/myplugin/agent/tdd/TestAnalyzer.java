@@ -9,10 +9,10 @@ public class TestAnalyzer {
     private static final Pattern BUILD_FAILED = Pattern.compile("(?i)BUILD\\s+FAILED");
     private static final Pattern TESTS_PASSED = Pattern.compile("(?i)(\\d+)\\s+tests?\\s+passed");
     private static final Pattern TESTS_FAILED = Pattern.compile("(?i)(\\d+)\\s+tests?\\s+failed");
-    private static final Pattern TEST_FAILURE = Pattern.compile("(?i)test.*failed|assertion.*error|expected.*but.*was");
+    private static final Pattern TEST_FAILURE = Pattern.compile("(?i)(\\d+)\\s+tests?\\s+failed|assertion\\s*fail|expected\\s+.*\\s+but\\s+(was|got)");
     private static final Pattern COMPILATION_ERROR = Pattern.compile("(?i)compilation\\s+error|cannot\\s+find\\s+symbol");
     private static final Pattern CLASS_NOT_FOUND = Pattern.compile("(?i)classnotfound|class\\s+not\\s+found");
-    private static final Pattern NULL_POINTER = Pattern.compile("(?i)nullpointer|null\\s+pointer|null_pointer");
+    private static final Pattern NULL_POINTER = Pattern.compile("(?i)nullpointer|null\\s+pointer|null_pointer|\\bnpe\\b");
     private static final Pattern EXCEPTION = Pattern.compile("(?i)exception|error");
 
     public enum Outcome {
@@ -45,24 +45,24 @@ public class TestAnalyzer {
         }
 
         if (BUILD_FAILED.matcher(lower).find()) {
-            if (NULL_POINTER.matcher(lower).find()) {
-                return new Analysis(Outcome.TEST_CRASH, "NullPointerException in test");
+            if (COMPILATION_ERROR.matcher(lower).find()) {
+                return new Analysis(Outcome.TEST_ERROR, extractCompilationError(testOutput));
             }
 
             if (CLASS_NOT_FOUND.matcher(lower).find()) {
                 return new Analysis(Outcome.TEST_FAILS_AS_EXPECTED, "Class not found (expected for missing implementation)");
             }
 
-            if (COMPILATION_ERROR.matcher(lower).find()) {
-                return new Analysis(Outcome.TEST_ERROR, extractCompilationError(testOutput));
+            if (TEST_FAILURE.matcher(lower).find()) {
+                return new Analysis(Outcome.TEST_FAILS_AS_EXPECTED, extractFailureReason(testOutput));
+            }
+
+            if (NULL_POINTER.matcher(lower).find()) {
+                return new Analysis(Outcome.TEST_CRASH, "NullPointerException in test");
             }
 
             if (EXCEPTION.matcher(lower).find()) {
                 return new Analysis(Outcome.TEST_CRASH, extractException(testOutput));
-            }
-
-            if (TEST_FAILURE.matcher(lower).find()) {
-                return new Analysis(Outcome.TEST_FAILS_AS_EXPECTED, extractFailureReason(testOutput));
             }
 
             return new Analysis(Outcome.TEST_FAILS_AS_EXPECTED, "Build failed");
