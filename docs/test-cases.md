@@ -54,7 +54,7 @@ SPEC → PLAN → TDD → CHANGE → DONE
 
 | 前置 | 输入 | 具体预期 |
 |------|------|----------|
-| 用文本通道 `pipeline start requirement=... spec_domain=auth` 建实例 | 点击 `Refresh` | 列表出现一行，格式含 `[SPEC] 需求前30字 (auth)`；悬停有 tooltip 显示完整 ID/stage/spec/requirement/步骤数 |
+| 用文本通道 `pipeline start requirement=... spec_domain=agent-tools` 建实例 | 点击 `Refresh` | 列表出现一行，格式含 `[SPEC] 需求前30字 (agent-tools)`；悬停有 tooltip 显示完整 ID/stage/spec/requirement/步骤数 |
 
 > 列表与文本通道共享同一存储（`.idea/myplugin-pipeline.json`），先建实例后面板才能列出。
 
@@ -68,7 +68,7 @@ SPEC → PLAN → TDD → CHANGE → DONE
 
 | 前置 | 输入 | 具体预期 |
 |------|------|----------|
-| 处于 SPEC 且已 `add_step`（文本通道） | 选中实例 → 点 `Advance Plan` | 底部输出 `=== STAGE: PLAN ===`；点 `Refresh` 后该行为 `[PLAN] ...` |
+| 处于 SPEC 且已 `add_step`（文本通道） | 选中实例 → 点 `Advance Plan` | 底部输出 `=== STAGE: PLAN ===`，其中 `Plan file:` 为**自动生成的计划文件名**（面板不传 plan_file，工具自动写 `docs/plans/<date>-<slug>-plan.md`）；**无需手动 Refresh**，列表该行立即变 `[PLAN] ...`（面板每次点按钮后自动刷新，见 P-UI15） |
 
 ### P-UI4 多实例：列表区分选中
 
@@ -128,7 +128,68 @@ SPEC → PLAN → TDD → CHANGE → DONE
 
 | 输入 | 具体预期 |
 |------|----------|
-| 文本通道完成 `link_change`（→DONE） | 面板列表若不刷新仍是旧阶段；点 `Refresh` 后该实例消失 | 说明面板是**快照驱动**，文本通道的变更需手动刷新可见 |
+| 文本通道完成 `link_change`（→DONE） | 面板列表若不刷新仍是旧阶段；点 `Refresh` 后该实例消失 | 面板是**快照驱动**：文本通道的变更需手动点 `Refresh` 才可见；而**面板自身点按钮后会立即自动刷新**（见 P-UI15），两者不对称，核验时注意区分 |
+
+### P-UI12 点按钮后自动刷新 + 选中项重置
+
+| 前置 | 输入 | 具体预期 |
+|------|------|----------|
+| 列表有 2 条实例，当前选中**第 2 条** | 对第 2 条点 `Advance Plan`（使其 SPEC→PLAN） | ① 输出区出现工具结果；② **不等 Refresh**，列表第 2 行标签立即变为 `[PLAN] ...`；③ 选中项**重置为第 1 条**（面板每次刷新后 `setSelectedIndex(0)`），摘要行随之变成第 1 条实例的信息 |
+
+> 这是已知交互特性（非缺陷）：面板刷新后固定选中第一条。若第 1、2 条阶段不同，刷新后按钮可用性会随第 1 条阶段变化——核验时按"选中项已重置"理解，不要当成状态丢失。
+
+### P-UI13 长需求截断与 (no-spec) 显示
+
+| 前置 | 输入 | 具体预期 |
+|------|------|----------|
+| 文本通道 `pipeline start` 一条**超过 30 字符**的 requirement（如 50 个字符） | Refresh → 查看列表该行 | 列表标签的需求部分只显示**前 30 字符 + `...`**，格式 `[SPEC] <30字>... (domain)` |
+| 选中该实例 | 查看摘要行 | 摘要显示**前 40 字符 + `...`**（比列表多 10 字） |
+| 悬停该行 | tooltip | 显示**完整** requirement、ID、Stage、Spec、Steps（tooltip 不截断） |
+| 文本通道 `pipeline start` 一条**不带 spec_domain** 的实例 | Refresh → 查看列表 | 该行 domain 显示 `no-spec`（而非空白），格式 `[SPEC] <需求> (no-spec)` |
+
+### P-UI14 空状态与输出区格式
+
+| 前置 | 输入 | 具体预期 |
+|------|------|----------|
+| 无任何活跃实例（首次或全部 DONE） | 打开 Pipeline tab | 列表为空；摘要行显示 `No active pipeline instance selected.`（面板打开时列表为空，选中为空，故为"selected"文案） |
+| 任一状态 | 点 `Status` 或 `List` 等任意会输出结果的按钮 | 每次工具结果追加在输出区末尾，结果块之间以 `-------------------------------`（27 个短横线）分隔；输出区**不可编辑** |
+| 工具执行抛异常（难以人工构造，可选） | — | 输出区出现 `Error: <异常消息>` 且面板不崩溃（`run()` 统一捕获） |
+
+### P-UI15 List 按钮（面板通道）
+
+| 前置 | 输入 | 具体预期 |
+|------|------|----------|
+| 存在 2 条不同阶段实例（如 1 条 SPEC、1 条 PLAN） | 选中任意实例 → 点 `List` | 输出区显示 `=== SPEC-DRIVEN PIPELINE ===` + 每活跃实例一行 `- [STAGE] 需求 (spec: domain)`；**DONE 实例不出现**；不依赖选中项（未选中也可点） |
+| 无任何活跃实例 | 点 `List` | 输出 `No active pipeline instances. Use pipeline.start to begin.` |
+
+### P-UI16 Status 按钮（面板通道，明细）
+
+| 前置 | 输入 | 具体预期 |
+|------|------|----------|
+| 选中一条已 add_step 并推进到 PLAN 的实例 | 点 `Status` | 输出区显示 `=== PIPELINE INSTANCE ===` 明细：`ID:`、`Stage: PLAN`、`Requirement:`、`Spec:`、`Plan:`、`Plan steps (N):`（每步带 `[X]`/`[>]`/`[ ]` 标记）、`Change:`（若已 link）、`--- Stage Log ---` 含 `CREATED at SPEC stage` 与 `ADVANCED to PLAN` 记录 |
+| 未选中实例 | — | `Status` 按钮**置灰不可点**（面板不发送无 id 的 status；要看全量状态请用文本通道 `pipeline status`，见 P-T02） |
+
+### P-UI17 Export Plan 按钮（面板通道）
+
+| 前置 | 输入 | 具体预期 |
+|------|------|----------|
+| `docs/plans/` 下**没有任何**计划文件 | 点 `Export Plan` | 输出 `Error: no plans in docs/plans. Use generate_plan first.` |
+| `docs/plans/` 下**已有**计划（P-06 或 P-07 自动生成过） | 点 `Export Plan` | ① 输出 `=== Plan Exported ===`、`Source: docs/plans/<name>.md`、`Exported file: docs/plans/export/<name>-export.md` + 渲染内容前 1200 字符；② 面板**不传 file 参数** → 导出的是 `docs/plans/` 下**最近一份**计划；③ 落盘断言：`docs/plans/export/<name>-export.md` 存在，内含 `## Task/Step Summary`、`Tasks: N, Steps: M` 统计与 `## Full Plan Content` 原文 |
+
+> 面板 `Export Plan` 是零输入快捷方式；要指定导出**某一份**计划，请用文本通道 `export plan file=<name>.md`（见 P-T06）。
+
+### P-UI18 面板按钮与文本通道输出一致性
+
+| 前置 | 输入 | 具体预期 |
+|------|------|----------|
+| 同一 SPEC 实例、已 add_step | 面板点 `Advance Plan` 得到输出 A；再对**另一条**同条件实例用文本通道 `pipeline advance_plan pipeline_id=<id>` 得到输出 B | A 与 B 的工具原始输出一致（都是 `=== STAGE: PLAN ===` 且 Plan file 为各自自动生成的文件名）；面板输出区直接显示工具原始字符串，文本通道由 LLM 转述（可能包装叙述文），**断言以面板输出与落盘为准** |
+
+### P-UI19 面板操作写入 ui 通道 trace
+
+| 前置 | 输入 | 具体预期 |
+|------|------|----------|
+| 当前会话存在（Chat tab 有过对话） | 面板点 `Status`、`List` 各一次 | `.idea/myplugin-conversations.json` 当前会话的 trace 新增 2 条 `channel="ui"` 记录：toolName=`sdd_pipeline`、arguments 含 `pipeline_id`（Status）/`action=list`（List）、result 与面板输出一致、有 timestamp |
+| 当前会话**不存在**（刚重启 IDE 未开新对话） | 面板点 `Status` | 工具仍正常执行、输出正常显示；trace 写入静默跳过（不崩溃、无 Error 输出）——trace 依赖当前会话存在 |
 
 ---
 
@@ -138,12 +199,12 @@ SPEC → PLAN → TDD → CHANGE → DONE
 
 | 输入 | 具体预期 | 输出 → 下一流程 |
 |------|----------|-----------------|
-| `pipeline start requirement="用户登录" spec_domain=auth` | 返回 `=== SPEC PIPELINE STARTED ===`，含：`Pipeline ID: <uuid>`、`Requirement: 用户登录`、`Stage: SPEC`、`Spec doc: openspec/specs/auth/spec.md`，并提示保存 pipeline_id | **输出的 pipeline_id 是后续所有 add_step / advance_plan / start_tdd 的必传参数**，测试者必须复制保存 |
+| `pipeline start requirement="新增 Agent 工具 export_plan：读取 docs/plans 下计划并导出为 Markdown 到 docs/plans/export" spec_domain=agent-tools` | 返回 `=== SPEC PIPELINE STARTED ===`，含：`Pipeline ID: <uuid>`、`Requirement: 新增 Agent 工具 export_plan...`、`Stage: SPEC`、`Spec doc: openspec/specs/agent-tools/spec.md`，并提示保存 pipeline_id | **输出的 pipeline_id 是后续所有 add_step / advance_plan / start_tdd 的必传参数**，测试者必须复制保存 |
 
 **落盘断言（P-01 的真正判据，气泡文本不作断言）：**
 - ① `.idea/myplugin-pipeline.json` 以 `<uuid>` 为 key 的实例，`stage=SPEC`。
 - ② `.idea/myplugin-conversations.json` 中 ASSISTANT 消息的 `thinking` 字段含原始工具输出 `[Tool Result] sdd_pipeline: === SPEC PIPELINE STARTED ===`（LLM 会把工具输出包装成叙述文，最终气泡不可作文本断言）。
-- ③ `openspec/specs/auth/spec.md` 已生成（含 `## Purpose` 与 `### Requirement: 用户登录`），可被 `list_specs` 解析——这是 SPEC 阶段**落盘的 SDD 产物**。
+- ③ `openspec/specs/agent-tools/spec.md` 已生成（含 `## Purpose` 与 `### Requirement: 新增 Agent 工具 export_plan...`），可被 `list_specs` 解析——这是 SPEC 阶段**落盘的 SDD 产物**。
 
 ### P-02 缺 requirement 启动（防御）
 
@@ -165,7 +226,7 @@ SPEC → PLAN → TDD → CHANGE → DONE
 
 | 输入 | 具体预期 | 输出 → 下一流程 |
 |------|----------|-----------------|
-| `pipeline add_step pipeline_id=<id> plan_steps="写登录测试\n实现登录逻辑"` | 返回 `Added 2 plan step(s) to pipeline <id>.`，并提示 `Next: call advance_plan` | **plan_steps 被存入实例，共 2 步**。这是后续 start_tdd 的 step_index 依据（0=写登录测试，1=实现登录逻辑） |
+| `pipeline add_step pipeline_id=<id> plan_steps="扫描 docs/plans 目录\n导出 Markdown 报告"` | 返回 `Added 2 plan step(s) to pipeline <id>.`，并提示 `Next: call advance_plan` | **plan_steps 被存入实例，共 2 步**。这是后续 start_tdd 的 step_index 依据（0=扫描 docs/plans 目录，1=导出 Markdown 报告） |
 
 备注：`plan_steps` 按换行拆分，空行会被忽略（`addStep` 过滤空白行）。
 
@@ -173,7 +234,7 @@ SPEC → PLAN → TDD → CHANGE → DONE
 
 | 输入 | 具体预期 | 备注 |
 |------|----------|------|
-| `pipeline advance_plan pipeline_id=<id>`（此时**未** add_step） | 返回 `Add plan steps first (action=add_step) or you can pass plan_steps with advance_plan.`，**阶段仍停留 SPEC** | 验证"无步骤不可推进"的护栏 |
+| `pipeline advance_plan pipeline_id=<id>`（此时**未** add_step） | 返回 `Add plan steps first (action=add_step) or you can pass plan_steps with advance_plan.`，**阶段仍停留 SPEC** | 验证"无步骤不可推进"的护栏。**注意**：提示文案虽提到可随 advance_plan 传 plan_steps，但代码 `advancePlan()` 并不读取该参数——实际仍需先 `add_step`（文案与实现不一致，属已知小瑕疵，核验时按"必须 add_step"为准） |
 
 ### P-06 生成并落地计划（与 generate_plan 衔接）
 
@@ -200,7 +261,7 @@ SPEC → PLAN → TDD → CHANGE → DONE
 
 | 用例 | 输入 | 具体预期 | 输出 → 下一流程 |
 |------|------|----------|-----------------|
-| P-08b | `tdd start_cycle task="写登录测试"` | `=== TDD Cycle Started ===`，Task、Cycle #、`State: RED`，提示先写失败测试 | **state=RED** → 下一步 write_test |
+| P-08b | `tdd start_cycle task="扫描 docs/plans 目录"` | `=== TDD Cycle Started ===`，Task、Cycle #、`State: RED`，提示先写失败测试 | **state=RED** → 下一步 write_test |
 | P-08c | `tdd write_test` | (RED→RED_VERIFY) 提示运行测试确认失败 | **state=RED_VERIFY** → 下一步 verify_test |
 | P-08d | `tdd verify_test test_output="BUILD FAILED\n1 test failed: expected 2 but was 1"` | (RED_VERIFY→GREEN)（测试按预期失败） | **state=GREEN** → 下一步 write_code |
 | P-08e | `tdd write_code` | (GREEN→GREEN_VERIFY) | **state=GREEN_VERIFY** → 下一步 verify_code |
@@ -225,7 +286,7 @@ SPEC → PLAN → TDD → CHANGE → DONE
 
 | 输入 | 具体预期 | 输出 → 下一流程 |
 |------|----------|-----------------|
-| `pipeline start_tdd pipeline_id=<id> step_index=1` | 返回 `=== STAGE: TDD (step 2/2) ===`、`Task: 实现登录逻辑`、提示 `Use 'tdd_enforcer start_cycle' with this task...complete_tdd with step_index=1` | **currentStepIndex 更新为 1** → 再跑一轮 P-08b~g，mark_refactor 后 allStepsDone → CHANGE |
+| `pipeline start_tdd pipeline_id=<id> step_index=1` | 返回 `=== STAGE: TDD (step 2/2) ===`、`Task: 导出 Markdown 报告`、提示 `Use 'tdd_enforcer start_cycle' with this task...complete_tdd with step_index=1` | **currentStepIndex 更新为 1** → 再跑一轮 P-08b~g，mark_refactor 后 allStepsDone → CHANGE |
 
 （也可用 `pipeline complete_tdd step_index=<当前>` 手动完成步骤，但推荐 tdd mark_refactor 联动。）
 
@@ -237,7 +298,7 @@ SPEC → PLAN → TDD → CHANGE → DONE
 
 | 前置 | 输入 | 具体预期 | 输出 → 下一流程 |
 |------|------|----------|-----------------|
-| 流水线已到 CHANGE（所有 TDD 步完成） | `pipeline link_change pipeline_id=<id> change_name=login-change` | 返回 `Linked change 'login-change' to pipeline <id>. Stage: CHANGE`（因当前是 CHANGE → 自动 advance 到 DONE） | **流水线进入 DONE**。change 应已配合 openspec 的 create_change 在 `openspec/changes` 创建 |
+| 流水线已到 CHANGE（所有 TDD 步完成） | `pipeline link_change pipeline_id=<id> change_name=export-plan-tool` | 返回 `Linked change 'export-plan-tool' to pipeline <id>. Stage: CHANGE`（因当前是 CHANGE → 自动 advance 到 DONE） | **流水线进入 DONE**。change 应已配合 openspec 的 create_change 在 `openspec/changes` 创建 |
 
 ### P-13 完成（归档收尾）
 
@@ -256,6 +317,66 @@ SPEC → PLAN → TDD → CHANGE → DONE
 | 输入 | 具体预期 |
 |------|----------|
 | `pipeline status pipeline_id=<id>` | `Stage:`、`Requirement:`、`Plan:`、`Plan steps(N):`（带 `[X]/[>]/[ ]` 标记）、`Current step:`、`Change:`、`Stage Log:`（含各 ADVANCED/STARTED/DONE 记录） |
+
+---
+
+## 面板补测：工具层行为（文本通道执行，覆盖面板按钮够不到的参数/分支）
+
+> 以下用例走**文本通道**（关键词：`pipeline` / `spec` / `change`），用于覆盖 `sdd_pipeline` 工具中面板按钮不会触发的分支。断言均针对工具原始输出（thinking 字段中的 `[Tool Result] sdd_pipeline: ...` 或落盘文件），LLM 转述气泡不作断言。
+
+### P-T01 start：无 spec_domain / spec 已存在 / note_zh
+
+| 用例 | 输入 | 具体预期 |
+|------|------|----------|
+| P-T01a | `pipeline start requirement="No domain requirement"`（不带 spec_domain） | 输出含 `Note: no spec_domain given, no spec doc generated.`；**不创建** `openspec/specs/` 目录；面板列表中该实例显示 `no-spec`（见 P-UI13） |
+| P-T01b | 先执行 P-01（agent-tools 域 spec 已生成），再 `pipeline start requirement="Second agent-tools req" spec_domain=agent-tools` | 输出含 `openspec/specs/agent-tools/spec.md (already exists)`；磁盘上 `spec.md` **保持第一次的内容不被覆盖**（读文件比对） |
+| P-T01c | `pipeline start requirement="User can reset password" spec_domain=reset note_zh="密码重置备注"`（用新 domain 避免 P-T01b 干扰） | 生成的 `openspec/specs/reset/spec.md` 正文保持英文，**末尾**含 `> Note (Chinese): 密码重置备注` |
+
+### P-T02 status：不带 pipeline_id（全量明细）
+
+| 用例 | 输入 | 具体预期 |
+|------|------|----------|
+| P-T02a | 存在 2 条活跃实例 | `pipeline status`（不给 id） | 输出为两条 `=== PIPELINE INSTANCE ===` 明细拼接（各自含 ID/Stage/Stage Log），顺序为创建顺序 |
+| P-T02b | 无任何活跃实例 | `pipeline status` | 输出 `No active pipeline instances. Use pipeline.start to begin.` |
+
+> 面板 `Status` 按钮必须选中实例（无 id 分支只存在于文本通道）——见 P-UI16。
+
+### P-T03 next_step（面板无此按钮）
+
+| 用例 | 前置 | 输入 | 具体预期 |
+|------|------|------|----------|
+| P-T03 | 实例依次处于各阶段 | `pipeline next_step pipeline_id=<id>` | SPEC → `Next: add plan steps (action=add_step), then call advance_plan.`；PLAN → `Next: call start_tdd with step_index=0...`；TDD → 含当前步任务文本与 `complete_tdd` 提示；CHANGE → `create_change + implement + archive, then call link_change`；DONE → `This requirement is complete.` |
+
+### P-T04 非法阶段推进 / 未知实例
+
+| 用例 | 输入 | 具体预期 |
+|------|------|----------|
+| P-T04a | `pipeline advance_plan pipeline_id=<id>`（实例**已在 PLAN**） | `Can only advance to PLAN from SPEC. Current: PLAN`，阶段不变 |
+| P-T04b | `pipeline start_tdd pipeline_id=<id> step_index=0`（实例仍在 **SPEC**） | `Can only start TDD from PLAN/TDD. Current: SPEC` |
+| P-T04c | `pipeline status pipeline_id=not-exist-id` | `Pipeline instance not found: not-exist-id`（status 对未知 id 返回 not found，而非崩溃） |
+
+### P-T05 start_tdd step_index 越界
+
+| 用例 | 前置 | 输入 | 具体预期 |
+|------|------|------|----------|
+| P-T05 | PLAN 阶段、2 步 | `pipeline start_tdd pipeline_id=<id> step_index=5` | `Invalid step_index 5 (plan has 2 steps).`，currentStepIndex 不变 |
+
+> 面板 `Start TDD` 自动取 next 且先检查 `next >= size`（P-UI6 的 `All plan steps already started.`），面板侧不会发出越界 step_index；此分支只能文本通道触达。
+
+### P-T06 complete_tdd 步号不匹配 / export 指定文件
+
+| 用例 | 前置 | 输入 | 具体预期 |
+|------|------|------|----------|
+| P-T06a | TDD 阶段，currentStepIndex=0（step 0 有证据） | `pipeline complete_tdd pipeline_id=<id> step_index=1` | `Cannot complete step 1 (not the current step, or invalid index).`（证据校验通过但 `currentStepIndex != stepIndex` 被拒） |
+| P-T06b | `docs/plans/` 有 ≥2 份计划 | `export plan file=<较旧那份的文件名>.md` | 输出 `=== Plan Exported ===`，`Source:` 为指定文件（而非最新那份）；`docs/plans/export/<该文件>-export.md` 落盘 |
+
+### P-T07 未知 action
+
+| 用例 | 输入 | 具体预期 |
+|------|------|----------|
+| P-T07 | `pipeline action=foo pipeline_id=<id>`（诱导模型传 action=foo） | 工具返回 `Unknown action: foo. Use: start, add_step, advance_plan, start_tdd, complete_tdd, link_change, complete, status, list, next_step` |
+
+> LLM 可能不照传 `foo`（自行纠正为合法 action），此用例**以 thinking 中实际 tool call 参数与工具原始输出为准**；若模型改传合法 action，记 N/A 并备注。
 
 ---
 
@@ -279,7 +400,7 @@ SPEC → PLAN → TDD → CHANGE → DONE
 
 | 步骤 | 入口 | 操作 | 预期 |
 |------|------|------|------|
-| 1 | 文本 | `pipeline start requirement="用户登录" spec_domain=auth` | SPEC 实例已建 |
+| 1 | 文本 | `pipeline start requirement="新增 Agent 工具 export_plan：读取 docs/plans 下计划并导出为 Markdown 到 docs/plans/export" spec_domain=agent-tools` | SPEC 实例已建 |
 | 2 | 面板 | `Refresh` → 选中该实例 → 摘要 `[SPEC]` | 列表/摘要正确 |
 | 3 | 文本 | `pipeline add_step pipeline_id=<id> plan_steps="步1\n步2"` | 加入 2 步 |
 | 4 | 面板 | 点 `Advance Plan` | `[PLAN]` |
@@ -296,7 +417,66 @@ SPEC → PLAN → TDD → CHANGE → DONE
 |----------|------|
 | SPEC 阶段点 `Complete TDD`/`Start TDD` | 按钮不可用（灰）或输出 Error 提示，阶段不变 |
 | TDD 阶段未跑循环点 `Complete TDD` | 提示 `no TDD evidence` |
-| 未选中实例点 `Complete`/`Status`/`Start TDD` | `Start TDD`/`Complete`/`Link Change` 为灰；`Status` 输出 `Select a pipeline instance first.` |
+| 未选中实例时查看各按钮 | `Start TDD`/`Complete`/`Complete TDD`/`Status`/`Link Change`/`Advance Plan` 全部置灰不可点；仅 `Export Plan`/`List`/`Create Change` 可点（`Create Change` 点出走文本通道提示）；输出区**不会**出现工具调用（置灰按钮无法触发；`Select a pipeline instance first.` 提示仅在选中态失效的极端时序下出现） |
+
+---
+
+## 阶段五：Chat Stop 按钮（流式中断）
+
+> 目标：`Stop` 按钮在**任何模式下中断当前生成**，并正确恢复 UI 状态。
+> 前置：插件已运行，Chat tab 可见，底部有 `Send` / `Stop` 两个按钮，模型可用（本地 llama.cpp 已起）。
+> 说明：Stop 涉及两个执行路径——**非 Agent 流式**（`LlamaChatStreamClient`，勾选「流式输出」）与 **Agent 模式**（勾选 Agent 开关）。下面用例区分标注。
+> **当前已知状态**：Stream 模式与 Agent 模式的 `currentStreamThread`/`agentThread` 接线不完整，`stopStreaming()` 主要依赖 `currentStreamThread.interrupt()`（仅非流式路径赋值），流式与 Agent 路径中断不生效——用例即验收实现。
+
+### S-01 初始状态（未请求时）
+
+| 输入 | 预期（通过标准） | 备注 |
+|------|------------------|------|
+| 打开 Chat，未发送任何消息 | `Stop` **灰置不可点**；`Send` 可用；输入框可输入 | 初始化 `stopButton.setEnabled(false)` |
+
+### S-02 发送后进入生成态
+
+| 输入 | 预期（通过标准） |
+|------|-------------------|
+| 在输入框输入一条普通消息（如 `解释这个项目的架构`），点 `Send` | 请求发起瞬间：`Stop` 变为**可用**、`Send` **变灰**（同一时刻互斥）；状态栏显示 `Agent working...` 或正在输出 |
+
+### S-03 非 Agent 流式输出中途点 Stop（核心缺陷场景）
+
+| 前置 | 输入 | 预期（通过标准） | 当前实际 |
+|------|------|------------------|----------|
+| 勾选「流式输出」（Stream Mode）+ **未**勾选 Agent；模型输出足够长（可要求"写一份 3 段长文"） | 输出进行中（文本仍在跳动）点 `Stop` | ① 输出**立即停止追加**，末尾文本冻结不动；② `Stop` 变灰、`Send` 与输入框立即恢复可用；③ 不再产生新的后端请求；④ 无异常弹窗 | Stream 路径 `currentStreamThread` 未被赋值，`stopStreaming()` 的 interrupt 落空 → 文本继续输出、UI 保持生成态 → **FAIL** |
+
+### S-04 Agent 模式应答中途点 Stop
+
+| 前置 | 输入 | 预期（通过标准） | 当前实际 |
+|------|------|------------------|----------|
+| 勾选 Agent；发一条会让 Agent 多次思考/多工具调用的请求（如 `pipeline status 然后解释`） | Agent 仍在迭代（thinking/工具卡片还在追加）时点 `Stop` | ① 不再发起**新的** tool call；② 答案区追加 `[Agent stopped by user]`；③ `Stop` 变灰、`Send` 恢复；④ 会话被保存（对话仍含该次消息），可继续发下一条 | `stopStreaming()` 同时路径下 `currentStreamThread` 为空、未调用 `setStreaming(false)` → UI 保持生成态，可能直到 Agent 自然结束才恢复 → **FAIL 或依赖 Agent 自然结束** |
+
+### S-05 停止后立即再发消息（状态复位）
+
+| 前置 | 输入 | 预期（通过标准） | 备注 |
+|------|------|------------------|------|
+| 完成 S-03 或 S-04 的 Stop | 不重启插件，直接输入新消息点 `Send` | `Stop` 重新可用、`Send` 变灰，新一轮生成正常开展；上一次不会"复活"追加 | 若上一层 Stop 未复位 UI，此处会卡在 Send 灰置 → FAIL |
+
+### S-06 Stop 幂等（重复点击不崩）
+
+| 前置 | 输入 | 预期（通过标准） |
+|------|------|------------------|
+| 处于生成态（S-02） | 连续快速点 `Stop` 2~3 次 | 无异常、无重复输出；最终 UI 收敛到停止态（Stop 灰、Send 可用）；第一次点击后 Stop 应立即置灰（第二次点击实际点不到） |
+
+### S-07 非流式模式下 Stop
+
+| 前置 | 输入 | 预期（通过标准） |
+|------|------|------------------|
+| **取消**「流式输出」；发一条长请求 | 输出等待期间点 `Stop` | 请求被中断（无完成回调继续写 UI），UI 立即复位、无残留生成态 |
+
+### S-08 停止后会话持久化
+
+| 前置 | 输入 | 预期（通过标准） |
+|------|------|------------------|
+| 完成 S-03 / S-04 的 Stop | 查看 `.idea/myplugin-conversations.json` | 该会话存在；含被停止的那次 user/assistant 消息（流水线/工具 trace 正常写入）；若 Stop 发生于 Agent 工具调用中，trace 中该工具调用仍有记录 |
+
+> **验收判定**：S-01/S-02 为前置基础；S-03、S-04 是缺陷的核心场景（当前 FAIL）；S-05~S-08 为停止后状态收敛回归。实现 Stop 功能时以 S-03/S-04 的「通过标准」为验收目标。
 
 ---
 
@@ -337,6 +517,14 @@ SPEC → PLAN → TDD → CHANGE → DONE
 | P-UI9 手填按钮走文本通道 | | |
 | P-UI10 双通道 trace | | |
 | P-UI11 Refresh 同步 | | |
+| P-UI12 点按钮后自动刷新+选中重置 | | |
+| P-UI13 长需求截断与 no-spec | | |
+| P-UI14 空状态与输出区格式 | | |
+| P-UI15 List 按钮 | | |
+| P-UI16 Status 按钮明细 | | |
+| P-UI17 Export Plan 按钮 | | |
+| P-UI18 面板/文本输出一致性 | | |
+| P-UI19 面板 ui 通道 trace | | |
 | P-01 启动流水线 | | |
 | P-02 缺 requirement | | |
 | P-03 状态查询(SPEC) | | |
@@ -352,9 +540,24 @@ SPEC → PLAN → TDD → CHANGE → DONE
 | P-13 complete 收尾 | | |
 | P-14 列表排除 DONE | | |
 | P-15 全程状态明细 | | |
+| P-T01 start 分支(无domain/已存在/note_zh) | | |
+| P-T02 status 不带 id | | |
+| P-T03 next_step | | |
+| P-T04 非法阶段推进/未知实例 | | |
+| P-T05 step_index 越界 | | |
+| P-T06 complete_tdd 步号不匹配/export 指定文件 | | |
+| P-T07 未知 action | | |
 | E2E-01 单步骤冒烟 | | |
 | E2E-02 多步骤冒烟 | | |
 | E2E-03 混合通道全流程 | | |
 | E2E-04 面板防御 | | |
+| S-01 初始状态 | | |
+| S-02 发送后进入生成态 | | |
+| S-03 流式输出中途 Stop | | |
+| S-04 Agent 应答中途 Stop | | |
+| S-05 停止后立即再发 | | |
+| S-06 Stop 幂等 | | |
+| S-07 非流式 Stop | | |
+| S-08 停止后会话持久化 | | |
 
 （请按需复制多行，对应上面各用例编号填写。完整示例的 REG-0~REG-19 见 `docs/USAGE.md` 第 7 节。）

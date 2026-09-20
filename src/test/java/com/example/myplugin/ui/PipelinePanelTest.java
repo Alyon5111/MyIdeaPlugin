@@ -160,13 +160,14 @@ class PipelinePanelTest {
     }
 
     @Test
-    void stagePlanEnablesAdvanceAndStartTdd() {
+    void stagePlanEnablesStartTddOnly() {
         SpecPipelineInstance inst = createInstance("auth", "req");
         service.advance(inst.getId(), PipelineStage.PLAN, "planned");
         refresh();
         selectFirst();
 
-        assertTrue(panel.advancePlanButton.isEnabled());
+        // Advance Plan is SPEC->PLAN, so it is disabled once the instance is in PLAN.
+        assertFalse(panel.advancePlanButton.isEnabled());
         assertTrue(panel.startTddButton.isEnabled());
         assertFalse(panel.completeTddButton.isEnabled());
         assertFalse(panel.completeButton.isEnabled());
@@ -209,7 +210,7 @@ class PipelinePanelTest {
 
         panel.advancePlanButton.doClick();
 
-        assertEquals("sdd_pipeline|{"action":"advance_plan","pipeline_id":"" + inst.getId() + ""}",
+        assertEquals("sdd_pipeline|{\"action\":\"advance_plan\",\"pipeline_id\":\"" + inst.getId() + "\"}",
                 runner.lastCall());
     }
 
@@ -336,20 +337,30 @@ class PipelinePanelTest {
     }
 
     @Test
-    void selectionRequiredActionsPromptWhenNothingSelected() {
+    void selectionRequiredActionsAreDisabledWhenNothingSelected() {
         createInstance("auth", "req");
         refresh();
         panel.instanceList.clearSelection();
 
-        panel.advancePlanButton.doClick();
-        panel.startTddButton.doClick();
-
-        assertTrue(runner.calls.isEmpty());
-        assertTrue(panel.output.getText().contains("Select a pipeline instance first"));
+        assertEquals("No active pipeline instance selected.", panel.summaryLabel.getText());
+        assertFalse(panel.advancePlanButton.isEnabled());
+        assertFalse(panel.startTddButton.isEnabled());
+        assertFalse(panel.completeTddButton.isEnabled());
+        assertFalse(panel.completeButton.isEnabled());
+        assertFalse(panel.statusButton.isEnabled());
+        assertFalse(panel.linkChangeButton.isEnabled());
+        // Buttons that never require a selection stay enabled:
+        assertTrue(panel.exportPlanButton.isEnabled());
+        assertTrue(panel.listButton.isEnabled());
+        assertTrue(panel.createChangeButton.isEnabled());
     }
 
     @Test
     void manualButtonsExplainToUseTextChannel() {
+        createInstance("auth", "req");
+        refresh();
+        selectFirst();
+
         panel.createChangeButton.doClick();
         panel.linkChangeButton.doClick();
 
