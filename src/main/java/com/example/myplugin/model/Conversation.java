@@ -50,14 +50,18 @@ public class Conversation {
         }
 
         public void addToolCall(String toolName, String arguments, String result) {
-            toolCalls.add(new ToolCallRecord(toolName, arguments, result));
+            addToolCall(toolName, arguments, result, "text");
+        }
+
+        public void addToolCall(String toolName, String arguments, String result, String channel) {
+            toolCalls.add(new ToolCallRecord(toolName, arguments, result, channel));
         }
 
         public void updateLastToolCallResult(String result) {
             if (!toolCalls.isEmpty()) {
                 ToolCallRecord last = toolCalls.get(toolCalls.size() - 1);
                 toolCalls.set(toolCalls.size() - 1,
-                        new ToolCallRecord(last.getToolName(), last.getArguments(), result));
+                        new ToolCallRecord(last.getToolName(), last.getArguments(), result, last.getChannel()));
             }
         }
     }
@@ -66,23 +70,57 @@ public class Conversation {
         private String toolName;
         private String arguments;
         private String result;
+        private String channel;
 
         private ToolCallRecord() {}
 
         public ToolCallRecord(String toolName, String arguments, String result) {
+            this(toolName, arguments, result, "text");
+        }
+
+        public ToolCallRecord(String toolName, String arguments, String result, String channel) {
             this.toolName = toolName;
             this.arguments = arguments;
             this.result = result;
+            this.channel = channel;
         }
 
         public String getToolName() { return toolName; }
         public String getArguments() { return arguments; }
         public String getResult() { return result; }
+        public String getChannel() { return channel; }
+    }
+
+    public static class TraceEntry {
+        private String toolName;
+        private String arguments;
+        private String result;
+        private String channel;
+        private LocalDateTime timestamp;
+
+        private TraceEntry() {}
+
+        public TraceEntry(String toolName, String arguments, String result, String channel) {
+            this.toolName = toolName;
+            this.arguments = arguments;
+            this.result = result;
+            this.channel = channel;
+            this.timestamp = LocalDateTime.now();
+        }
+
+        public String getToolName() { return toolName; }
+        public String getArguments() { return arguments; }
+        public String getResult() { return result; }
+        public String getChannel() { return channel; }
+        public LocalDateTime getTimestamp() { return timestamp; }
+
+        public void setResult(String result) { this.result = result; }
     }
 
     private final String id;
     private String title;
     private final List<ChatMessage> messages;
+    private final List<TraceEntry> trace = new ArrayList<>();
     private final LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 
@@ -108,6 +146,14 @@ public class Conversation {
 
     public List<ChatMessage> getMessages() {
         return messages;
+    }
+
+    public List<TraceEntry> getTrace() {
+        return trace;
+    }
+
+    public void addTrace(String toolName, String arguments, String result, String channel) {
+        trace.add(new TraceEntry(toolName, arguments, result, channel));
     }
 
     public void addMessage(Role role, String content) {

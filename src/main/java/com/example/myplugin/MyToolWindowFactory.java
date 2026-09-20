@@ -3,6 +3,7 @@ package com.example.myplugin;
 import com.example.myplugin.model.Conversation;
 import com.example.myplugin.service.ConversationService;
 import com.example.myplugin.ui.ChatPanel;
+import com.example.myplugin.ui.PipelinePanel;
 import com.example.myplugin.ui.SettingsPanel;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.wm.ToolWindow;
@@ -44,5 +45,10 @@ public class MyToolWindowFactory implements ToolWindowFactory {
         Content settingsContent = contentFactory.createContent(settingsPanel, "Settings", false);
         settingsContent.setCloseable(false);
         toolWindow.getContentManager().addContent(settingsContent);
+
+        PipelinePanel pipelinePanel = new PipelinePanel(project, service);
+        Content pipelineContent = contentFactory.createContent(pipelinePanel, "Pipeline", false);
+        pipelineContent.setCloseable(false);
+        toolWindow.getContentManager().addContent(pipelineContent);
     }
 }

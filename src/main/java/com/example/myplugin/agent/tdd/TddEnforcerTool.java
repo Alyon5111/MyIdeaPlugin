@@ -259,6 +259,9 @@ public class TddEnforcerTool implements AgentTool {
             int stepIndex = instance != null ? instance.getCurrentStepIndex() : -1;
             boolean completed = stepIndex >= 0 && pipeline.completeStepTdd(linkedPipelineId, stepIndex);
             if (completed) {
+                // Only a full RED->GREEN->REFACTOR cycle closes a step. Record evidence so
+                // pipeline.complete_tdd cannot fake completion of an unimplemented step.
+                pipeline.recordTddEvidence(linkedPipelineId, stepIndex);
                 SpecPipelineInstance after = pipeline.getById(linkedPipelineId);
                 if (after != null && after.allStepsDone()) {
                     pipeline.advance(linkedPipelineId, PipelineStage.CHANGE, "all steps implemented via TDD");

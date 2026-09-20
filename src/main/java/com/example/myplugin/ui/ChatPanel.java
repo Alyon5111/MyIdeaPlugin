@@ -11,6 +11,7 @@ import com.example.myplugin.model.CustomChatModel;
 import com.example.myplugin.model.LanguageModel;
 import com.example.myplugin.model.ModelProvider;
 import com.example.myplugin.service.ConversationService;
+import com.example.myplugin.service.TraceRecorder;
 import com.example.myplugin.agent.memory.AgentMemoryService;
 import com.example.myplugin.agent.memory.semanticmemory.ConversationSemanticMemory;
 import com.example.myplugin.settings.PluginStateService;
@@ -78,6 +79,9 @@ public class ChatPanel extends JPanel {
         agentToggle = new JCheckBox("Agent");
         agentToggle.setToolTipText("Toggle Agent mode (tool calling)");
         agentToggle.setFont(new Font("Dialog", Font.BOLD, 11));
+        agentToggle.setSelected(PluginStateService.getInstance().isAgentEnabled());
+        agentToggle.addActionListener(e ->
+                PluginStateService.getInstance().setAgentEnabled(agentToggle.isSelected()));
         eastPanel.add(agentToggle);
         eastPanel.add(refreshButton);
         topBar.add(eastPanel, BorderLayout.EAST);
@@ -465,6 +469,14 @@ public class ChatPanel extends JPanel {
                     tp.setThinkingText(msg.getThinking());
                     messagesPanel.add(tp);
                 }
+                for (Conversation.ToolCallRecord record : msg.getToolCalls()) {
+                    ToolCallPanel card = new ToolCallPanel(record.getToolName(), record.getArguments());
+                    if (record.getResult() != null && !record.getResult().isEmpty()) {
+                        card.appendResult(record.getResult());
+                    }
+                    messagesPanel.add(card);
+                    messagesPanel.add(Box.createVerticalStrut(4));
+                }
                 addAssistantMessage(messagesPanel, msg.getContent());
             }
             if (idx < total) {
@@ -501,6 +513,20 @@ public class ChatPanel extends JPanel {
         return tp;
     }
 
+    private void addSystemHint(JPanel messagesPanel, String text) {
+        JTextArea area = new JTextArea(text);
+        area.setEditable(false);
+        area.setLineWrap(true);
+        area.setWrapStyleWord(true);
+        area.setFont(new Font("Dialog", Font.PLAIN, 11));
+        area.setForeground(new Color(120, 120, 200));
+        area.setBackground(UIManager.getColor("Panel.background"));
+        area.setBorder(BorderFactory.createEmptyBorder(4, 8, 4, 8));
+        area.setAlignmentX(Component.LEFT_ALIGNMENT);
+        area.setMaximumSize(new Dimension(Integer.MAX_VALUE, area.getPreferredSize().height + 10));
+        messagesPanel.add(area);
+    }
+
     private void addUserMessage(JPanel messagesPanel, String text) {
         JTextArea area = new JTextArea("You: " + text);
         area.setEditable(false);
@@ -526,6 +552,18 @@ public class ChatPanel extends JPanel {
         area.setAlignmentX(Component.LEFT_ALIGNMENT);
         messagesPanel.add(area);
         messagesPanel.add(Box.createVerticalStrut(8));
+    }
+
+    private JTextArea createAnswerArea() {
+        JTextArea area = new JTextArea("Assistant:\n");
+        area.setEditable(false);
+        area.setLineWrap(true);
+        area.setWrapStyleWord(true);
+        area.setFont(new Font("Monospaced", Font.PLAIN, 13));
+        area.setBackground(UIManager.getColor("Panel.background"));
+        area.setBorder(BorderFactory.createEmptyBorder(6, 8, 6, 8));
+        area.setAlignmentX(Component.LEFT_ALIGNMENT);
+        return area;
     }
 
     public void refreshModels() {
@@ -645,6 +683,10 @@ public class ChatPanel extends JPanel {
         thinkingPanel.startStreaming();
         thinkingPanel.expand();
         messagesPanel.add(thinkingPanel);
+
+        JTextArea answerArea = createAnswerArea();
+        messagesPanel.add(answerArea);
+        messagesPanel.add(Box.createVerticalStrut(8));
         messagesPanel.revalidate();
         scrollToBottom(scrollPane);
 
@@ -652,8 +694,9 @@ public class ChatPanel extends JPanel {
 
         agentThread = new Thread(() -> {
             StringBuilder thinkingBuf = new StringBuilder();
+            ToolCallPanel[] lastToolCallPanel = {null};
             try {
-                agentExecutor.execute(conv.getMessages(), modelName, new AgentExecutor.AgentEvent() {
+                agentExecutor.executeStreaming(conv.getMessages(), modelName, new AgentExecutor.AgentEvent() {
                     @Override
                     public void onThinking(String text) {
                         String entry = "[Thinking] " + text + "\n";
@@ -664,26 +707,57 @@ public class ChatPanel extends JPanel {
 
                     @Override
                     public void onToolCall(String toolName, String arguments) {
-                        String entry = "[Tool Call] " + toolName + ": " + arguments + "\n";
-                        thinkingBuf.append(entry);
-                        thinkingPanel.appendThinking(entry);
-                        SwingUtilities.invokeLater(() -> scrollToBottom(scrollPane));
+                        agentMsg.addToolCall(toolName, arguments, "", "text");
+                        ToolCallPanel card = new ToolCallPanel(toolName, arguments);
+                        lastToolCallPanel[0] = card;
+                        if (project != null) {
+                            TraceRecorder.record(project, toolName, arguments, "", "text");
+                        }
+                        SwingUtilities.invokeLater(() -> {
+                            messagesPanel.add(card);
+                            messagesPanel.add(Box.createVerticalStrut(4));
+                            messagesPanel.revalidate();
+                            scrollToBottom(scrollPane);
+                        });
                     }
 
                     @Override
                     public void onToolResult(String toolName, String result) {
-                        String entry = "[Tool Result] " + toolName + ": " + result + "\n\n";
-                        thinkingBuf.append(entry);
-                        thinkingPanel.appendThinking(entry);
-                        SwingUtilities.invokeLater(() -> scrollToBottom(scrollPane));
+                        agentMsg.updateLastToolCallResult(result);
+                        if (project != null) {
+                            Conversation conv = conversationService.getCurrentConversation();
+                            if (conv != null && !conv.getTrace().isEmpty()) {
+                                Conversation.TraceEntry last = conv.getTrace().get(conv.getTrace().size() - 1);
+                                last.setResult(result);
+                                conversationService.save();
+                            }
+                        }
+                        SwingUtilities.invokeLater(() -> {
+                            if (lastToolCallPanel[0] != null) {
+                                lastToolCallPanel[0].appendResult(result);
+                            }
+                            scrollToBottom(scrollPane);
+                        });
                     }
 
                     @Override
                     public void onAnswer(String text) {
-                        String entry = "[Answer] " + text + "\n";
-                        thinkingBuf.append(entry);
-                        thinkingPanel.appendThinking(entry);
-                        SwingUtilities.invokeLater(() -> scrollToBottom(scrollPane));
+                        if (text == null) return;
+                        final String t = text;
+                        SwingUtilities.invokeLater(() -> {
+                            answerArea.append(t);
+                            scrollToBottom(scrollPane);
+                        });
+                    }
+
+                    @Override
+                    public void onAnswerFragment(String text) {
+                        if (text == null) return;
+                        final String t = text;
+                        SwingUtilities.invokeLater(() -> {
+                            answerArea.append(t);
+                            scrollToBottom(scrollPane);
+                        });
                     }
 
                     @Override
@@ -692,6 +766,19 @@ public class ChatPanel extends JPanel {
                         thinkingBuf.append(entry);
                         thinkingPanel.appendThinking(entry);
                         SwingUtilities.invokeLater(() -> scrollToBottom(scrollPane));
+                    }
+
+                    @Override
+                    public void onContextTrim(int dropped, int kept, int maxContextMessages) {
+                        String entry = "[Context Trim] Dropped " + dropped + " earlier message(s); "
+                                + "keeping the most recent " + kept + " (limit " + maxContextMessages + "). "
+                                + "Earlier constraints may no longer be in context.\n";
+                        thinkingBuf.append(entry);
+                        SwingUtilities.invokeLater(() -> {
+                            addSystemHint(messagesPanel, entry.trim());
+                            messagesPanel.revalidate();
+                            scrollToBottom(scrollPane);
+                        });
                     }
                 });
 

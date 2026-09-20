@@ -30,12 +30,18 @@ import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.data.message.*;
 import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.chat.request.ChatRequest;
 import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
 import dev.langchain4j.model.openai.OpenAiChatModel;
+import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
 
 import java.time.Duration;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -106,12 +112,15 @@ public class AgentExecutor {
         default void onToolResult(String toolName, String result) {}
         default void onAnswer(String text) {}
         default void onError(String error) {}
+        default void onContextTrim(int dropped, int kept, int maxContextMessages) {}
+        default void onAnswerFragment(String text) {}
     }
 
     private final List<AgentTool> tools;
     private final List<ToolSpecification> toolSpecs;
     private final Map<String, AgentTool> toolMap;
     private ChatModel model;
+    private StreamingChatModel streamingModel;
     private volatile boolean cancelled = false;
     private String lastAnswer;
     private final AgentMemoryService memoryService;
@@ -194,6 +203,60 @@ public class AgentExecutor {
                 .build();
     }
 
+    private StreamingChatModel createStreamingModel(String modelName) {
+        PluginStateService state = PluginStateService.getInstance();
+        String url = state.getLlamaCppUrl();
+        if (url == null || url.isEmpty()) {
+            url = "http://localhost:8080";
+        }
+        if (!url.endsWith("/v1")) {
+            url = url.replaceAll("/+$", "") + "/v1";
+        }
+        return OpenAiStreamingChatModel.builder()
+                .baseUrl(url)
+                .apiKey(state.getApiKey() != null ? state.getApiKey() : "no-key")
+                .modelName(modelName)
+                .temperature(state.getTemperature())
+                .topP(state.getTopP())
+                .timeout(Duration.ofSeconds(PluginStateService.getInstance().getTimeout()))
+                .build();
+    }
+
+    /**
+     * Bridges the synchronous tool loop to the streaming model. Each iteration blocks until the
+     * full response arrives, streaming partial text prose out via onAnswerFragment so the UI can
+     * render answers incrementally while tool calls still flow through the same message loop.
+     */
+    private ChatResponse callModel(ChatRequest request, AgentEvent event, int timeoutSeconds) throws Exception {
+        if (streamingModel == null) {
+            return model.chat(request);
+        }
+        CompletableFuture<ChatResponse>[] ref = new CompletableFuture[]{new CompletableFuture<>()};
+        streamingModel.chat(request, new StreamingChatResponseHandler() {
+            @Override
+            public void onPartialResponse(String partial) {
+                if (partial != null && !partial.isBlank()) {
+                    event.onAnswerFragment(partial);
+                }
+            }
+
+            @Override
+            public void onCompleteResponse(ChatResponse response) {
+                ref[0].complete(response);
+            }
+
+            @Override
+            public void onError(Throwable error) {
+                ref[0].completeExceptionally(error);
+            }
+        });
+        try {
+            return ref[0].get(timeoutSeconds, TimeUnit.SECONDS);
+        } catch (TimeoutException e) {
+            throw new RuntimeException("Agent model request timed out after " + timeoutSeconds + "s");
+        }
+    }
+
     private static final Set<String> CORE_TOOLS = Set.of(
             "read_file", "list_files", "search_code", "execute_command"
     );
@@ -273,6 +336,18 @@ public class AgentExecutor {
             }
         }
         if (!selectedNames.isEmpty()) {
+            // Pipeline/TDD workflow tools are multi-step: 'pipeline start_tdd' must also give the
+            // model write_file/edit_file/execute_command/tdd_enforcer so it can truly implement the
+            // step. Collapsing to exactly one tool is what previously forced fake TDD (model could
+            // only call start_tdd -> complete_tdd, never writing any code). Single-tool forcing is
+            // kept for document tools (generate_plan/export_plan) whose steps are single-purpose.
+            if (selectedNames.contains("sdd_pipeline") || selectedNames.contains("tdd_enforcer")) {
+                selectedNames.add("write_file");
+                selectedNames.add("edit_file");
+                selectedNames.add("tdd_enforcer");
+                selectedNames.add("execute_command");
+                selectedNames.addAll(CORE_TOOLS);
+            }
             if (selectedNames.size() == 1) {
                 strongForcedTool = selectedNames.iterator().next();
             }
@@ -325,24 +400,35 @@ public class AgentExecutor {
         return result;
     }
 
-    private static void trimContextWindow(List<ChatMessage> messages, int maxContextMessages) {
+    private static int trimContextWindow(List<ChatMessage> messages, int maxContextMessages) {
         if (messages.size() <= maxContextMessages) {
-            return;
+            return 0;
         }
         // Always keep the system message (index 0) plus the most recent messages,
         // so earlier intermediate tool interactions are consumed and dropped.
+        int total = messages.size();
         int keepFrom = messages.size() - (maxContextMessages - 1);
         List<ChatMessage> retained = new ArrayList<>(messages.subList(0, 1));
         retained.addAll(messages.subList(Math.max(1, keepFrom), messages.size()));
         messages.clear();
         messages.addAll(retained);
+        return total - messages.size();
     }
 
     public String execute(List<Conversation.ChatMessage> history, String modelName, AgentEvent event) {
+        return execute(history, modelName, event, false);
+    }
+
+    public String executeStreaming(List<Conversation.ChatMessage> history, String modelName, AgentEvent event) {
+        return execute(history, modelName, event, true);
+    }
+
+    private String execute(List<Conversation.ChatMessage> history, String modelName, AgentEvent event, boolean streaming) {
         cancelled = false;
         lastAnswer = null;
         strongForcedTool = null;
         model = createModel(modelName);
+        streamingModel = streaming ? createStreamingModel(modelName) : null;
 
         String lastUserMsg = "";
         for (Conversation.ChatMessage msg : history) {
@@ -400,14 +486,17 @@ public class AgentExecutor {
 
                 // Enforce a sliding window so accumulated tool interactions do not
                 // outgrow the model's context (keeps system + recent history only).
-                trimContextWindow(messages, state.getAgentMaxContextMessages());
+                int dropped = trimContextWindow(messages, state.getAgentMaxContextMessages());
+                if (dropped > 0) {
+                    event.onContextTrim(dropped, messages.size(), state.getAgentMaxContextMessages());
+                }
 
                 ChatRequest request = ChatRequest.builder()
                         .messages(messages)
                         .toolSpecifications(activeToolSpecs)
                         .build();
 
-                ChatResponse response = model.chat(request);
+                ChatResponse response = callModel(request, event, PluginStateService.getInstance().getTimeout());
                 AiMessage aiMessage = response.aiMessage();
 
                 if (aiMessage.hasToolExecutionRequests()) {
@@ -469,6 +558,10 @@ public class AgentExecutor {
                         continue;
                     }
                     if (text != null && !text.isEmpty()) {
+                        if (streaming) {
+                            lastAnswer = text;
+                            return text;
+                        }
                         event.onAnswer(text);
                     }
                     lastAnswer = text;

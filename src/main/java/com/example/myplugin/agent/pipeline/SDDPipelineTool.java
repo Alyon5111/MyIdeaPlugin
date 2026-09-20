@@ -325,6 +325,12 @@ public class SDDPipelineTool implements AgentTool {
 
         SpecPipelineInstance instance = pipeline.getById(id);
         if (instance == null) return "Pipeline instance not found: " + id;
+        if (!pipeline.hasTddEvidence(id, stepIndex)) {
+            return "Error: step " + (stepIndex + 1) + " has no TDD evidence. " +
+                    "A step can only be completed by running a real RED->GREEN->REFACTOR cycle: " +
+                    "use tdd_enforcer start_cycle -> write_test -> verify_test -> write_code -> " +
+                    "verify_code -> mark_refactor. Calling complete_tdd directly is not allowed.";
+        }
         if (!pipeline.completeStepTdd(id, stepIndex)) {
             return "Cannot complete step " + stepIndex + " (not the current step, or invalid index).";
         }

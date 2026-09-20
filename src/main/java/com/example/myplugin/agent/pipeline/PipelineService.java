@@ -125,6 +125,21 @@ public class PipelineService {
         return false;
     }
 
+    public boolean recordTddEvidence(String id, int stepIndex) {
+        SpecPipelineInstance i = getById(id);
+        if (i != null) {
+            i.recordTddEvidence(stepIndex);
+            persist();
+            return true;
+        }
+        return false;
+    }
+
+    public boolean hasTddEvidence(String id, int stepIndex) {
+        SpecPipelineInstance i = getById(id);
+        return i != null && i.hasTddEvidence(stepIndex);
+    }
+
     public void linkPlan(String id, String planFile) {
         SpecPipelineInstance i = getById(id);
         if (i != null) {

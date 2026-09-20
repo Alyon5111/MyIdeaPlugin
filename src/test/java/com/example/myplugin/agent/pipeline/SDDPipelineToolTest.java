@@ -193,6 +193,7 @@ class SDDPipelineToolTest {
         service.addPlanStep(pi.getId(), "step one");
         service.advance(pi.getId(), PipelineStage.TDD, "t");
         service.startStepTdd(pi.getId(), 0);
+        service.recordTddEvidence(pi.getId(), 0);
 
         JsonObject args = new JsonObject();
         args.addProperty("action", "complete_tdd");
@@ -205,6 +206,27 @@ class SDDPipelineToolTest {
     }
 
     @Test
+    void testCompleteTddRequiresEvidence() {
+        PipelineService service = PipelineService.inMemory();
+        SDDPipelineTool tool = new SDDPipelineTool(service);
+        SpecPipelineInstance pi = service.create("auth", "req");
+        service.addPlanStep(pi.getId(), "step one");
+        service.advance(pi.getId(), PipelineStage.TDD, "t");
+        service.startStepTdd(pi.getId(), 0);
+
+        JsonObject args = new JsonObject();
+        args.addProperty("action", "complete_tdd");
+        args.addProperty("pipeline_id", pi.getId());
+        args.addProperty("step_index", 0);
+
+        String result = tool.execute(args);
+        assertTrue(result.contains("no TDD evidence"), result);
+        assertEquals(PipelineStage.TDD, service.getById(pi.getId()).getCurrentStage());
+        assertFalse(service.getById(pi.getId()).getStageLog().stream()
+                .anyMatch(l -> l.contains("TDD DONE")));
+    }
+
+    @Test
     void testCompleteTddMidStepStaysInTdd() {
         PipelineService service = PipelineService.inMemory();
         SDDPipelineTool tool = new SDDPipelineTool(service);
@@ -213,6 +235,7 @@ class SDDPipelineToolTest {
         service.addPlanStep(pi.getId(), "step two");
         service.advance(pi.getId(), PipelineStage.TDD, "t");
         service.startStepTdd(pi.getId(), 0);
+        service.recordTddEvidence(pi.getId(), 0);
 
         JsonObject args = new JsonObject();
         args.addProperty("action", "complete_tdd");

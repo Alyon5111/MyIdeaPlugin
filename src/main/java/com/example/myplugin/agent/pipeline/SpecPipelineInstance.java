@@ -22,6 +22,8 @@ public class SpecPipelineInstance {
 
     private List<String> stageLog;
 
+    private List<Integer> tddEvidence = new ArrayList<>();
+
     private SpecPipelineInstance() {}
 
     public SpecPipelineInstance(String specDomain, String requirement) {
@@ -79,6 +81,18 @@ public class SpecPipelineInstance {
         this.updatedAt = LocalDateTime.now();
         log("TDD DONE for step " + (stepIndex + 1) + ": " + planSteps.get(stepIndex));
         return true;
+    }
+
+    /** Records evidence that a step's TDD cycle really completed (via tdd_enforcer mark_refactor). */
+    public void recordTddEvidence(int stepIndex) {
+        if (!tddEvidence.contains(stepIndex)) {
+            tddEvidence.add(stepIndex);
+            log("TDD EVIDENCE for step " + (stepIndex + 1));
+        }
+    }
+
+    public boolean hasTddEvidence(int stepIndex) {
+        return tddEvidence.contains(stepIndex);
     }
 
     public boolean allStepsDone() {

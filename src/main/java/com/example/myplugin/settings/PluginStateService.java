@@ -27,6 +27,7 @@ public class PluginStateService implements PersistentStateComponent<PluginStateS
         public int agentMaxHistory = Constant.AGENT_MAX_HISTORY;
         public int agentMaxContextMessages = Constant.AGENT_MAX_CONTEXT_MESSAGES;
         public boolean streamMode = true;
+        public boolean agentEnabled = true;
         public boolean memoryEnabled = Constant.MEMORY_ENABLED;
         public boolean memoryExtractionEnabled = Constant.MEMORY_EXTRACTION_ENABLED;
         public int memoryMaxInjection = Constant.MEMORY_MAX_INJECTION;
@@ -144,6 +145,14 @@ public class PluginStateService implements PersistentStateComponent<PluginStateS
 
     public void setStreamMode(boolean streamMode) {
         myState.streamMode = streamMode;
+    }
+
+    public boolean isAgentEnabled() {
+        return myState.agentEnabled;
+    }
+
+    public void setAgentEnabled(boolean agentEnabled) {
+        myState.agentEnabled = agentEnabled;
     }
 
     public boolean isMemoryEnabled() {
