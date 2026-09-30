@@ -73,6 +73,12 @@ public class PipelineService {
         }
     }
 
+    public List<SpecPipelineInstance> getAll() {
+        synchronized (lock) {
+            return new ArrayList<>(instances);
+        }
+    }
+
     public List<SpecPipelineInstance> getActive() {
         synchronized (lock) {
             List<SpecPipelineInstance> active = new ArrayList<>();
@@ -175,6 +181,13 @@ public class PipelineService {
     public List<SpecPipelineInstance> getInstances() {
         synchronized (lock) {
             return new ArrayList<>(instances);
+        }
+    }
+
+    public void reload() {
+        synchronized (lock) {
+            instances.clear();
+            instances.addAll(persistence.load());
         }
     }
 

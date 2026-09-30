@@ -1,9 +1,13 @@
 package com.example.myplugin.ui;
 
+import com.example.myplugin.agent.AgentContext;
 import com.example.myplugin.agent.AgentExecutor;
+import com.example.myplugin.agent.pipeline.PipelineService;
+import com.example.myplugin.agent.pipeline.SDDPipelineTool;
 import com.example.myplugin.chatmodel.ChatModelFactory;
 import com.example.myplugin.chatmodel.ChatModelFactoryProvider;
 import com.example.myplugin.chatmodel.local.llamacpp.LlamaChatStreamClient;
+import com.example.myplugin.chatmodel.local.llamacpp.LlamaChatStreamClient.Handle;
 import com.example.myplugin.chatmodel.local.llamacpp.LlamaModelService;
 import com.example.myplugin.chatmodel.local.llamacpp.LlamaSSEClient;
 import com.example.myplugin.model.Conversation;
@@ -27,6 +31,8 @@ import java.awt.event.ActionListener;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class ChatPanel extends JPanel {
 
@@ -35,8 +41,11 @@ public class ChatPanel extends JPanel {
     private final JTextArea inputArea;
     private final JButton sendButton;
     private final JButton stopButton;
+    private JButton addButton;
+    private SDDPipelineTool pipelineTool;
     private volatile boolean isStreaming = false;
     private volatile Thread currentStreamThread;
+    private volatile Handle currentStreamHandle;
     private final ConversationService conversationService;
 
     private final JTabbedPane conversationTabs;
@@ -60,6 +69,7 @@ public class ChatPanel extends JPanel {
         this.project = project;
         if (project != null) {
             agentExecutor = new AgentExecutor(project);
+            pipelineTool = new SDDPipelineTool(new AgentContext(project), new PipelineService(project));
         }
 
         // Top bar: model selector + refresh
@@ -72,16 +82,21 @@ public class ChatPanel extends JPanel {
         refreshButton.setToolTipText("Refresh models");
         refreshButton.addActionListener(e -> {
             LlamaModelService.getInstance().resetModels();
+if (project != null) {
             refreshModels();
+        }
         });
 
         JPanel eastPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 2, 0));
         agentToggle = new JCheckBox("Agent");
         agentToggle.setToolTipText("Toggle Agent mode (tool calling)");
         agentToggle.setFont(new Font("Dialog", Font.BOLD, 11));
-        agentToggle.setSelected(PluginStateService.getInstance().isAgentEnabled());
-        agentToggle.addActionListener(e ->
-                PluginStateService.getInstance().setAgentEnabled(agentToggle.isSelected()));
+        agentToggle.setSelected(project != null && PluginStateService.getInstance().isAgentEnabled());
+        agentToggle.addActionListener(e -> {
+            if (project != null) {
+                PluginStateService.getInstance().setAgentEnabled(agentToggle.isSelected());
+            }
+        });
         eastPanel.add(agentToggle);
         eastPanel.add(refreshButton);
         topBar.add(eastPanel, BorderLayout.EAST);
@@ -119,6 +134,7 @@ public class ChatPanel extends JPanel {
                 if (conv != null && conv != conversationService.getCurrentConversation()) {
                     conversationService.switchTo(conv);
                 }
+                updatePipelineButtons();
             }
         });
 
@@ -221,6 +237,12 @@ public class ChatPanel extends JPanel {
         bottomPanel.add(inputWrapper, BorderLayout.CENTER);
 
         JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+
+        addButton = new JButton("Add");
+        addButton.setToolTipText("Add plan steps to this conversation's pipeline");
+        addButton.addActionListener(e -> runAddPlanSteps());
+        buttonPanel.add(addButton);
+
         stopButton = new JButton("Stop");
         stopButton.setEnabled(false);
         stopButton.addActionListener(e -> stopStreaming());
@@ -248,10 +270,16 @@ public class ChatPanel extends JPanel {
                 inputArea.insert("\n", inputArea.getCaretPosition());
             }
         });
+
+        updatePipelineButtons();
     }
 
     public void loadConversation(Conversation conv) {
-        if (conv == null) return;
+        if (conv == null) {
+            clearConversationTabs();
+            updatePipelineButtons();
+            return;
+        }
 
         String convId = conv.getId();
         if (!messagesPanelMap.containsKey(convId)) {
@@ -267,11 +295,94 @@ public class ChatPanel extends JPanel {
                 programmaticTabChange = false;
             }
         }
+        updatePipelineButtons();
     }
 
     private void createNewTab() {
-        Conversation conv = conversationService.createNewConversation(null);
-        // createTabForConversation will be called via loadConversation -> onConversationChanged
+        Conversation created = promptNewConversation();
+        if (created == null) {
+            return;
+        }
+        // createTabForConversation is called via loadConversation -> onConversationChanged
+    }
+
+    private Conversation promptNewConversation() {
+        JTextField titleField = new JTextField("", 20);
+        JTextField domainField = new JTextField("", 20);
+        JTextArea requirementArea = new JTextArea(3, 30);
+        requirementArea.setLineWrap(true);
+        requirementArea.setWrapStyleWord(true);
+
+        JPanel form = new JPanel(new GridBagLayout());
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(4, 6, 4, 6);
+        gbc.anchor = GridBagConstraints.WEST;
+
+        gbc.gridx = 0;
+        gbc.gridy = 0;
+        form.add(new JLabel("Title:"), gbc);
+        gbc.gridx = 1;
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        gbc.weightx = 1;
+        form.add(titleField, gbc);
+
+        gbc.gridx = 0;
+        gbc.gridy = 1;
+        gbc.weightx = 0;
+        form.add(new JLabel("domain_spec:"), gbc);
+        gbc.gridx = 1;
+        gbc.weightx = 1;
+        form.add(domainField, gbc);
+
+        gbc.gridx = 0;
+        gbc.gridy = 2;
+        gbc.weightx = 0;
+        form.add(new JLabel("Requirement:"), gbc);
+        gbc.gridx = 1;
+        gbc.weightx = 1;
+        form.add(new JScrollPane(requirementArea), gbc);
+
+        while (true) {
+            int option = JOptionPane.showConfirmDialog(
+                    this,
+                    form,
+                    "New Chat",
+                    JOptionPane.OK_CANCEL_OPTION,
+                    JOptionPane.PLAIN_MESSAGE);
+            if (option != JOptionPane.OK_OPTION) {
+                return null;
+            }
+
+            String title = titleField.getText().trim();
+            String domain = domainField.getText().trim();
+            String requirement = requirementArea.getText().trim();
+            if (title.isEmpty() || domain.isEmpty() || requirement.isEmpty()) {
+                JOptionPane.showMessageDialog(this,
+                        "Title, domain_spec and Requirement are all required.",
+                        "Validation", JOptionPane.WARNING_MESSAGE);
+                continue;
+            }
+
+            Conversation conv = conversationService.createNewConversation(title);
+            conv.setSpecDomain(domain);
+            conv.setRequirement(requirement);
+            conversationService.save();
+            runStartPipeline();
+            return conv;
+        }
+    }
+
+    private void clearConversationTabs() {
+        programmaticTabChange = true;
+        try {
+            while (conversationTabs.getTabCount() > 1) {
+                conversationTabs.removeTabAt(0);
+            }
+        } finally {
+            programmaticTabChange = false;
+        }
+        messagesPanelMap.clear();
+        scrollPaneMap.clear();
     }
 
     private void createTabForConversation(Conversation conv) {
@@ -314,7 +425,7 @@ public class ChatPanel extends JPanel {
             @Override
             public void mouseClicked(java.awt.event.MouseEvent e) {
                 if (e.getClickCount() == 2) {
-                    startRename(tabComponent, conv);
+                    startRename(conv);
                 } else {
                     int idx = findTabIndex(conv.getId());
                     if (idx >= 0) {
@@ -348,37 +459,68 @@ public class ChatPanel extends JPanel {
         return tabComponent;
     }
 
-    private void startRename(JPanel tabComponent, Conversation conv) {
-        JTextField field = new JTextField(conv.getTitle(), 12);
-        field.setFont(new Font("Dialog", Font.BOLD, 12));
-        field.setBorder(BorderFactory.createLineBorder(Color.GRAY));
-        tabComponent.removeAll();
-        tabComponent.add(field);
-        tabComponent.revalidate();
-        tabComponent.repaint();
-        field.requestFocusInWindow();
-        field.selectAll();
+    private void startRename(Conversation conv) {
+        JTextField titleField = new JTextField(conv.getTitle(), 20);
+        JTextField domainField = new JTextField(conv.getSpecDomain() != null ? conv.getSpecDomain() : "", 20);
+        JTextArea requirementArea = new JTextArea(conv.getRequirement() != null ? conv.getRequirement() : "", 3, 30);
+        requirementArea.setLineWrap(true);
+        requirementArea.setWrapStyleWord(true);
 
-        Runnable finishRename = () -> {
-            String newName = field.getText().trim();
-            if (!newName.isEmpty()) {
-                conv.setTitle(newName);
-                conversationService.save();
-            }
-            int idx = findTabIndex(conv.getId());
-            if (idx >= 0) {
-                conversationTabs.setTitleAt(idx, conv.getTitle());
-                conversationTabs.setTabComponentAt(idx, buildTabComponent(conv));
-            }
-        };
+        JPanel form = new JPanel(new GridBagLayout());
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(4, 6, 4, 6);
+        gbc.anchor = GridBagConstraints.WEST;
 
-        field.addActionListener(e -> finishRename.run());
-        field.addFocusListener(new java.awt.event.FocusAdapter() {
-            @Override
-            public void focusLost(java.awt.event.FocusEvent e) {
-                finishRename.run();
-            }
-        });
+        gbc.gridx = 0;
+        gbc.gridy = 0;
+        form.add(new JLabel("Title:"), gbc);
+        gbc.gridx = 1;
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        gbc.weightx = 1;
+        form.add(titleField, gbc);
+
+        gbc.gridx = 0;
+        gbc.gridy = 1;
+        gbc.weightx = 0;
+        form.add(new JLabel("domain_spec:"), gbc);
+        gbc.gridx = 1;
+        gbc.weightx = 1;
+        form.add(domainField, gbc);
+
+        gbc.gridx = 0;
+        gbc.gridy = 2;
+        gbc.weightx = 0;
+        form.add(new JLabel("Requirement:"), gbc);
+        gbc.gridx = 1;
+        gbc.weightx = 1;
+        form.add(new JScrollPane(requirementArea), gbc);
+
+        int option = JOptionPane.showConfirmDialog(
+                this,
+                form,
+                "Edit tab: " + conv.getTitle(),
+                JOptionPane.OK_CANCEL_OPTION,
+                JOptionPane.PLAIN_MESSAGE);
+        if (option != JOptionPane.OK_OPTION) {
+            return;
+        }
+
+        String title = titleField.getText().trim();
+        String domain = domainField.getText().trim();
+        if (!title.isEmpty()) {
+            conv.setTitle(title);
+        }
+        conv.setSpecDomain(domain.isEmpty() ? null : domain);
+        String requirement = requirementArea.getText().trim();
+        conv.setRequirement(requirement.isEmpty() ? null : requirement);
+        conversationService.save();
+
+        int idx = findTabIndex(conv.getId());
+        if (idx >= 0) {
+            conversationTabs.setTitleAt(idx, conv.getTitle());
+            conversationTabs.setTabComponentAt(idx, buildTabComponent(conv));
+        }
+        updatePipelineButtons();
     }
 
     private boolean isAddTab(int idx) {
@@ -607,6 +749,119 @@ public class ChatPanel extends JPanel {
         }
     }
 
+    private void updatePipelineButtons() {
+        boolean hasTool = pipelineTool != null;
+        Conversation conv = conversationService.getCurrentConversation();
+        boolean hasPipeline = hasTool && conv != null && conv.getPipelineId() != null
+                && !conv.getPipelineId().isEmpty();
+        if (addButton != null) {
+            addButton.setEnabled(hasTool && hasPipeline);
+        }
+    }
+
+    private void runStartPipeline() {
+        if (isStreaming || pipelineTool == null) {
+            return;
+        }
+        Conversation conv = conversationService.getCurrentConversation();
+        if (conv == null) {
+            return;
+        }
+        if (conv.getPipelineId() != null && !conv.getPipelineId().isEmpty()) {
+            return;
+        }
+        if (conv.getSpecDomain() == null || conv.getSpecDomain().isEmpty()) {
+            JPanel messagesPanel = getCurrentMessagesPanel();
+            if (messagesPanel != null) {
+                addSystemHint(messagesPanel, "Set spec_domain first: double-click the tab title and edit the domain_spec field.");
+            }
+            return;
+        }
+
+        String requirement = conv.getRequirement();
+        if (requirement == null || requirement.trim().isEmpty()) {
+            JPanel messagesPanel = getCurrentMessagesPanel();
+            if (messagesPanel != null) {
+                addSystemHint(messagesPanel, "Set a requirement for this chat: double-click the tab title and edit the requirement field.");
+            }
+            return;
+        }
+        requirement = requirement.trim();
+
+        com.google.gson.JsonObject args = new com.google.gson.JsonObject();
+        args.addProperty("action", "start");
+        args.addProperty("requirement", requirement);
+        args.addProperty("spec_domain", conv.getSpecDomain());
+
+        String result = pipelineTool.execute(args);
+        String pipelineId = extractPipelineId(result);
+        if (pipelineId != null) {
+            conv.setPipelineId(pipelineId);
+            conversationService.save();
+        }
+        showToolResult(conv, "sdd_pipeline", args.toString(), result);
+        updatePipelineButtons();
+    }
+
+    private void runAddPlanSteps() {
+        if (isStreaming || pipelineTool == null) {
+            return;
+        }
+        Conversation conv = conversationService.getCurrentConversation();
+        if (conv == null || conv.getPipelineId() == null || conv.getPipelineId().isEmpty()) {
+            return;
+        }
+
+        String steps = conv.getRequirement();
+        if (steps == null || steps.trim().isEmpty()) {
+            JPanel messagesPanel = getCurrentMessagesPanel();
+            if (messagesPanel != null) {
+                addSystemHint(messagesPanel, "Set a requirement for this chat: double-click the tab title and edit the requirement field.");
+            }
+            updatePipelineButtons();
+            return;
+        }
+        steps = steps.trim();
+
+        com.google.gson.JsonObject args = new com.google.gson.JsonObject();
+        args.addProperty("action", "add_step");
+        args.addProperty("pipeline_id", conv.getPipelineId());
+        args.addProperty("plan_steps", steps);
+
+        String result = pipelineTool.execute(args);
+        showToolResult(conv, "sdd_pipeline", args.toString(), result);
+        updatePipelineButtons();
+    }
+
+    private String extractPipelineId(String result) {
+        if (result == null) return null;
+        Matcher m = Pattern.compile("Pipeline ID:\\s*([0-9a-f-]+)").matcher(result);
+        return m.find() ? m.group(1) : null;
+    }
+
+    private void showToolResult(Conversation conv, String toolName, String args, String result) {
+        conv.addTrace(toolName, args, result, "ui");
+        conversationService.save();
+        JPanel messagesPanel = getCurrentMessagesPanel();
+        if (messagesPanel != null) {
+            JTextArea out = new JTextArea("[" + toolName + "]\n" + result);
+            out.setEditable(false);
+            out.setLineWrap(true);
+            out.setWrapStyleWord(true);
+            out.setFont(new Font("Monospaced", Font.PLAIN, 12));
+            out.setBorder(BorderFactory.createEmptyBorder(4, 8, 4, 8));
+            out.setAlignmentX(Component.LEFT_ALIGNMENT);
+            out.setMaximumSize(new Dimension(Integer.MAX_VALUE, out.getPreferredSize().height + 10));
+            messagesPanel.add(out);
+            messagesPanel.add(Box.createVerticalStrut(6));
+            messagesPanel.revalidate();
+        }
+        JScrollPane scrollPane = getCurrentScrollPane();
+        if (scrollPane != null) {
+            scrollToBottom(scrollPane);
+        }
+    }
+
     private void sendMessage() {
         String prompt = inputArea.getText().trim();
         if (prompt.isEmpty() || isStreaming) {
@@ -809,7 +1064,7 @@ public class ChatPanel extends JPanel {
                     scrollToBottom(scrollPane);
                     refreshTabTitle(conv);
                     setStreaming(false);
-                    setStatus("Agent done");
+                    setStatus(agentExecutor.isCancelled() ? "Agent stopped" : "Agent done");
                 });
             } catch (Exception e) {
                 SwingUtilities.invokeLater(() -> {
@@ -824,7 +1079,7 @@ public class ChatPanel extends JPanel {
     }
 
     private void streamResponse(JPanel messagesPanel, JScrollPane scrollPane, LanguageModel selectedModel, PluginStateService state, Conversation conv) {
-        LlamaChatStreamClient.streamChat(
+        currentStreamHandle = LlamaChatStreamClient.streamChat(
                 selectedModel.getModelName(),
                 conv.getMessages(),
                 (type, text) -> {
@@ -838,8 +1093,12 @@ public class ChatPanel extends JPanel {
                     });
                 },
                 (reasoning, content) -> {
+                    Handle active = currentStreamHandle;
+                    currentStreamHandle = null;
+                    boolean stopped = active != null && active.isCancelled();
+                    String finalContent = stopped ? content + "\n\n[Stopped]" : content;
                     boolean hasThinking = !reasoning.isEmpty();
-                    Conversation.ChatMessage assistantMsg = new Conversation.ChatMessage(Conversation.Role.ASSISTANT, content);
+                    Conversation.ChatMessage assistantMsg = new Conversation.ChatMessage(Conversation.Role.ASSISTANT, finalContent);
                     assistantMsg.setThinking(reasoning);
                     conv.getMessages().add(assistantMsg);
                     conv.setUpdatedAt(java.time.LocalDateTime.now());
@@ -859,8 +1118,10 @@ public class ChatPanel extends JPanel {
                         refreshTabTitle(conv);
                     });
                     setStreaming(false);
+                    setStatus(stopped ? "Streaming stopped" : "Done");
                 },
                 (isTimeout, errorMsg) -> {
+                    currentStreamHandle = null;
                     SwingUtilities.invokeLater(() -> {
                         currentAnswerArea.append("\n\nError: " + errorMsg);
                         messagesPanel.remove(currentThinkingPanel);
@@ -929,14 +1190,18 @@ public class ChatPanel extends JPanel {
         currentStreamThread.start();
     }
 
-    private void stopStreaming() {
+    void stopStreaming() {
         if (agentToggle.isSelected() && agentExecutor != null) {
             agentExecutor.cancel();
         }
         if (currentStreamThread != null) {
             currentStreamThread.interrupt();
-            setStreaming(false);
         }
+        if (currentStreamHandle != null) {
+            currentStreamHandle.cancel();
+            currentStreamHandle = null;
+        }
+        setStreaming(false);
     }
 
     private void setStreaming(boolean streaming) {
@@ -946,6 +1211,25 @@ public class ChatPanel extends JPanel {
             stopButton.setEnabled(streaming);
             inputArea.setEnabled(!streaming);
         });
+    }
+
+    // --- Test seams (package-private, deterministic RED target) ---
+
+    /** Puts the panel into the streaming UI state, as if a response were in flight. */
+    void simulateStreamingForTest() {
+        setStreaming(true);
+    }
+
+    boolean isStreamingActive() {
+        return isStreaming;
+    }
+
+    boolean isSendEnabled() {
+        return sendButton.isEnabled();
+    }
+
+    boolean isStopEnabled() {
+        return stopButton.isEnabled();
     }
 
     private void scrollToBottom(JScrollPane scrollPane) {

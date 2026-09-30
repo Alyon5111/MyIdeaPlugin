@@ -51,6 +51,13 @@ public class AgentExecutor {
 
     // Truncate individual tool results before they enter the context window (~1k tokens).
     private static final int TOOL_RESULT_MAX_CHARS = 4000;
+
+    // Weak tool-following models (qwen-3-27b) will explore forever instead of writing code.
+    // In TDD runs, treat these as "exploration" calls; after the budget runs out the tools are
+    // removed from the active spec set so the model physically cannot keep reading files.
+    private static final java.util.Set<String> TDD_EXPLORATION_TOOLS =
+            java.util.Set.of("list_files", "read_file", "search_code", "execute_command");
+    private static final int TDD_EXPLORATION_BUDGET = 10;
     private static final SystemMessage BASE_SYSTEM_MESSAGE = SystemMessage.from(
             "You are an expert coding agent. Use tools to explore the codebase, then provide a clear final answer.\n\n" +
             "RULES:\n" +
@@ -103,7 +110,9 @@ public class AgentExecutor {
         String rolePrompt = ROLE_PROMPTS.getOrDefault(role,
                 "You are a DEVELOPER. Write clean, correct code. " +
                 "Follow existing code conventions and patterns in the project.");
-        return SystemMessage.from(BASE_SYSTEM_MESSAGE.text() + "\n\n" + rolePrompt + extraTools);
+        String tail = systemPromptTailOverride != null ? "\n\n" + systemPromptTailOverride : "";
+        systemPromptTailOverride = null;
+        return SystemMessage.from(BASE_SYSTEM_MESSAGE.text() + "\n\n" + rolePrompt + extraTools + tail);
     }
 
     public interface AgentEvent {
@@ -122,9 +131,51 @@ public class AgentExecutor {
     private ChatModel model;
     private StreamingChatModel streamingModel;
     private volatile boolean cancelled = false;
+    private volatile CompletableFuture<ChatResponse> inFlightCall;
     private String lastAnswer;
     private final AgentMemoryService memoryService;
     private String strongForcedTool;
+    private int toolCallLimitOverride = -1;
+    private int maxIterationsOverride = -1;
+    private String roleOverride;
+    private String systemPromptTailOverride;
+    private boolean suppressMemoryInjectionOverride = false;
+
+    /** Overrides the tool-call limit for the next execute() call (e.g. long TDD chains). -1 = use settings default. */
+    public void setToolCallLimitOverride(int limit) {
+        this.toolCallLimitOverride = limit;
+    }
+
+    /** Overrides the iteration limit for the next execute() call. -1 = use settings default. */
+    public void setMaxIterationsOverride(int iterations) {
+        this.maxIterationsOverride = iterations;
+    }
+
+    /** Forces the role used for the next execute() call. Null = auto-detect. */
+    public void setRoleOverride(String role) {
+        this.roleOverride = role;
+    }
+
+    /** Appends extra system-prompt instructions for the next execute() call. Null = none. */
+    public void setSystemPromptTail(String tail) {
+        this.systemPromptTailOverride = tail;
+    }
+
+    /** Suppresses the semantic-memory injection for the next execute() call (clean-room TDD runs). */
+    public void setSuppressMemoryInjection(boolean suppress) {
+        this.suppressMemoryInjectionOverride = suppress;
+    }
+
+    /** Directly runs one of this executor's tools, bypassing the model. Returns the tool output. */
+    public String runTool(String toolName, String jsonArgs) {
+        AgentTool tool = toolMap.get(toolName);
+        if (tool == null) return "Unknown tool: " + toolName;
+        try {
+            return tool.execute(JsonParser.parseString(jsonArgs).getAsJsonObject());
+        } catch (Exception e) {
+            return "Error executing tool: " + e.getMessage();
+        }
+    }
 
     public AgentExecutor(Project project) {
         AgentContext ctx = new AgentContext(project);
@@ -232,28 +283,33 @@ public class AgentExecutor {
             return model.chat(request);
         }
         CompletableFuture<ChatResponse>[] ref = new CompletableFuture[]{new CompletableFuture<>()};
-        streamingModel.chat(request, new StreamingChatResponseHandler() {
-            @Override
-            public void onPartialResponse(String partial) {
-                if (partial != null && !partial.isBlank()) {
-                    event.onAnswerFragment(partial);
-                }
-            }
-
-            @Override
-            public void onCompleteResponse(ChatResponse response) {
-                ref[0].complete(response);
-            }
-
-            @Override
-            public void onError(Throwable error) {
-                ref[0].completeExceptionally(error);
-            }
-        });
+        inFlightCall = ref[0];
         try {
-            return ref[0].get(timeoutSeconds, TimeUnit.SECONDS);
-        } catch (TimeoutException e) {
-            throw new RuntimeException("Agent model request timed out after " + timeoutSeconds + "s");
+            streamingModel.chat(request, new StreamingChatResponseHandler() {
+                @Override
+                public void onPartialResponse(String partial) {
+                    if (!cancelled && partial != null && !partial.isBlank()) {
+                        event.onAnswerFragment(partial);
+                    }
+                }
+
+                @Override
+                public void onCompleteResponse(ChatResponse response) {
+                    ref[0].complete(response);
+                }
+
+                @Override
+                public void onError(Throwable error) {
+                    ref[0].completeExceptionally(error);
+                }
+            });
+            try {
+                return ref[0].get(timeoutSeconds, TimeUnit.SECONDS);
+            } catch (TimeoutException e) {
+                throw new RuntimeException("Agent model request timed out after " + timeoutSeconds + "s");
+            }
+        } finally {
+            inFlightCall = null;
         }
     }
 
@@ -345,6 +401,8 @@ public class AgentExecutor {
                 selectedNames.add("write_file");
                 selectedNames.add("edit_file");
                 selectedNames.add("tdd_enforcer");
+                selectedNames.add("run_tests");
+                selectedNames.add("run_gradle_task");
                 selectedNames.add("execute_command");
                 selectedNames.addAll(CORE_TOOLS);
             }
@@ -438,21 +496,29 @@ public class AgentExecutor {
         }
 
         PluginStateService state = PluginStateService.getInstance();
-        int maxIterations = state.getAgentMaxIterations();
-        int maxToolCalls = state.getAgentMaxToolCalls();
+        int maxIterations = maxIterationsOverride > 0
+                ? maxIterationsOverride
+                : state.getAgentMaxIterations();
+        maxIterationsOverride = -1;
+        int maxToolCalls = toolCallLimitOverride > 0
+                ? toolCallLimitOverride
+                : state.getAgentMaxToolCalls();
+        toolCallLimitOverride = -1;
         int maxHistory = state.getAgentMaxHistory();
 
-        String role = detectRole(lastUserMsg);
+        String role = roleOverride != null ? roleOverride : detectRole(lastUserMsg);
+        roleOverride = null;
         List<AgentTool> selectedTools = selectToolsForMessage(lastUserMsg);
         List<ToolSpecification> activeToolSpecs = selectedTools.stream()
                 .map(AgentTool::specification)
                 .collect(Collectors.toList());
         String toolList = selectedTools.stream().map(AgentTool::name).collect(Collectors.joining(", "));
         String memoryInjection = "";
-        if (PluginStateService.getInstance().isMemoryEnabled()) {
+        if (PluginStateService.getInstance().isMemoryEnabled() && !suppressMemoryInjectionOverride) {
             memoryInjection = memoryService.formatForSystemInjection(
                     PluginStateService.getInstance().getMemoryMaxInjection());
         }
+        suppressMemoryInjectionOverride = false;
         SystemMessage systemMsg = buildSystemMessage(role, "\n\nAvailable tools: " + toolList + memoryInjection);
 
         List<ChatMessage> messages = new ArrayList<>();
@@ -477,8 +543,12 @@ public class AgentExecutor {
         event.onThinking("Selected tools (" + selectedTools.size() + "): " + toolList);
         event.onThinking("---");
 
-        java.util.Map<String, Integer> callCounts = new HashMap<>();
+        String lastCallKey = null;
+        int consecutiveCallCount = 0;
         int totalToolCalls = 0;
+        boolean isTddRun = selectedTools.stream().anyMatch(t -> t.name().equals("tdd_enforcer"));
+        int explorationCalls = 0;
+        boolean explorationForced = false;
 
         for (int i = 0; i < maxIterations && !cancelled; i++) {
             try {
@@ -519,10 +589,14 @@ public class AgentExecutor {
                         }
 
                         String callKey = toolName + ":" + args;
-                        int count = callCounts.getOrDefault(callKey, 0) + 1;
-                        callCounts.put(callKey, count);
+                        if (callKey.equals(lastCallKey)) {
+                            consecutiveCallCount++;
+                        } else {
+                            lastCallKey = callKey;
+                            consecutiveCallCount = 1;
+                        }
 
-                        if (count >= 3) {
+                        if (consecutiveCallCount >= 3) {
                             event.onThinking("Repeated tool call detected, forcing final answer");
                             messages.add(UserMessage.from(
                                     "STOP. You have already called this exact same tool with the same arguments. " +
@@ -547,6 +621,36 @@ public class AgentExecutor {
 
                         event.onToolResult(toolName, result);
                         messages.add(ToolExecutionResultMessage.from(toolReq, truncateToolResult(result)));
+
+                        if (isTddRun && TDD_EXPLORATION_TOOLS.contains(toolName)) {
+                            // Pure exploration: read_file/list_files/search_code/execute_command.
+                            // AgentContext/other calls give these results already; a run that only
+                            // explores never produces a test, so enforce a hard budget.
+                            explorationCalls++;
+                            if (!explorationForced && explorationCalls > TDD_EXPLORATION_BUDGET) {
+                                explorationForced = true;
+                                activeToolSpecs.removeIf(spec -> TDD_EXPLORATION_TOOLS.contains(spec.name()));
+                                messages.add(UserMessage.from(
+                                        "EXPLORATION BUDGET EXHAUSTED (" + TDD_EXPLORATION_BUDGET + " calls). "
+                                        + "The relevant source is already embedded in the task instructions. "
+                                        + "STOP reading files. Your next tool call MUST make progress: "
+                                        + "write_file/edit_file (test or implementation), run_tests/run_gradle_task, "
+                                        + "or tdd_enforcer (verify_test/verify_code/mark_refactor)."));
+                                event.onThinking("TDD exploration budget exceeded (" + TDD_EXPLORATION_BUDGET
+                                        + "), exploration tools removed from this run");
+                                break;
+                            }
+                        } else if (isTddRun && explorationForced) {
+                            // A non-exploration call succeeded (wrote a file, ran tests, advanced
+                            // the enforcer) => that TDD phase made progress; allow reading again
+                            // so the next phase (e.g. GREEN) can inspect the code it must change.
+                            activeToolSpecs = selectedTools.stream()
+                                    .map(AgentTool::specification)
+                                    .collect(Collectors.toList());
+                            explorationForced = false;
+                            explorationCalls = 0;
+                            event.onThinking("TDD progress detected, exploration tools restored");
+                        }
                     }
                 } else {
                     String text = aiMessage.text();
@@ -567,6 +671,11 @@ public class AgentExecutor {
                     lastAnswer = text;
                     return text;
                 }
+            } catch (java.util.concurrent.CancellationException e) {
+                if (!cancelled) {
+                    throw e;
+                }
+                break;
             } catch (Exception e) {
                 String error = "Agent error: " + e.getMessage();
                 if (e instanceof java.net.ConnectException) {
@@ -604,6 +713,24 @@ public class AgentExecutor {
 
     public void cancel() {
         cancelled = true;
+        CompletableFuture<ChatResponse> call = inFlightCall;
+        if (call != null) {
+            call.cancel(true);
+        }
+        StreamingChatModel m = streamingModel;
+        if (m != null) {
+            streamingModel = null;
+            if (m instanceof AutoCloseable closeable) {
+                try {
+                    closeable.close();
+                } catch (Exception ignored) {
+                }
+            }
+        }
+    }
+
+    public boolean isCancelled() {
+        return cancelled;
     }
 
     public String getLastAnswer() {

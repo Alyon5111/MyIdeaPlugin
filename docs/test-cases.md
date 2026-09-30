@@ -1,15 +1,17 @@
 # SDD → Plan → TDD → Change 流程测试用例（MyIdeaPlugin）
 
 > 用途：验证规格驱动开发（Spec-Driven Development）全流程，阶段依序推进并正确流转数据。
-> 方式：在 IntelliJ 中运行插件（`runIde`），用**两个操作入口**验证：
-> 1. **文本命令通道（Chat 面板）**——用自然语言触发关键词调用对应工具。
-> 2. **Pipeline 操作面板（Pipeline tab）**——实例列表 + 按钮，选中实例后点按钮执行（零输入）。
-> 依据：以真实代码行为为准（`SDDPipelineTool` / `PipelineService` / `TddEnforcerTool` / `SpecPipelineInstance` / `PipelinePanel`）。
+> 方式：在 IntelliJ 中运行插件（`runIde`），用**三个操作入口**验证：
+> 1. **Chat 面板 `Add` 按钮 + 新建会话自动 start**——页签绑定一条 pipeline（零文本命令，见阶段〇B）。
+> 2. **文本命令通道（Chat 面板）**——用自然语言触发关键词调用对应工具。
+> 3. **Pipeline 操作面板（Pipeline tab）**——实例列表 + 按钮，选中实例后点按钮执行（零输入）。
+> 依据：以真实代码行为为准（`SDDPipelineTool` / `PipelineService` / `TddEnforcerTool` / `SpecPipelineInstance` / `PipelinePanel` / `ChatPanel`）。
 
-## 两个操作入口
+## 操作入口
 
 | 入口 | 位置 | 特性 |
 |------|------|------|
+| Chat 新建会话 + Add 按钮 | 工具窗口 `Chat` tab（`+` 与输入区下方） | **一键绑定**：点 `+` 弹窗**三必填**（Title/domain_spec/Requirement），落为会话字段（双击页签标题可改），确认后**自动 start** 创建并绑定 pipeline；`Add` 用会话 requirement 调 `add_step`；无 pipeline→Add 禁用，有→可用 |
 | 文本命令通道 | 工具窗口 `Chat` tab | 所有工具都可用，参数由 LLM 推断；需关键词触发（见下） |
 | Pipeline 操作面板 | 工具窗口 `Pipeline` tab | **零输入**：顶部实例列表 + 摘要，中间按钮，底部输出区；`Start / Add Steps / Link Change 需手填参数 → 走文本通道` |
 
@@ -54,7 +56,7 @@ SPEC → PLAN → TDD → CHANGE → DONE
 
 | 前置 | 输入 | 具体预期 |
 |------|------|----------|
-| 用文本通道 `pipeline start requirement=... spec_domain=agent-tools` 建实例 | 点击 `Refresh` | 列表出现一行，格式含 `[SPEC] 需求前30字 (agent-tools)`；悬停有 tooltip 显示完整 ID/stage/spec/requirement/步骤数 |
+| 用文本通道 `pipeline start requirement=... spec_domain=chat-ui` 建实例 | 点击 `Refresh` | 列表出现一行，格式含 `[SPEC] 需求前30字 (chat-ui)`；悬停有 tooltip 显示完整 ID/stage/spec/requirement/步骤数 |
 
 > 列表与文本通道共享同一存储（`.idea/myplugin-pipeline.json`），先建实例后面板才能列出。
 
@@ -193,18 +195,96 @@ SPEC → PLAN → TDD → CHANGE → DONE
 
 ---
 
+## 阶段〇B：Chat 面板 pipeline 按钮（Add）+ 新建会话自动 start
+
+> 新增功能：**Chat 面板无 `Start` 按钮**。点 `+`（新建会话）弹出对话框，填写 `Title` / `domain_spec` / `Requirement` 三个必填字段（任一为空 → 拦截重填，取消则不创建会话），确认后把三字段落为 Conversation 字段（`.idea/myplugin-conversations.json` 的 `title` / `specDomain` / `requirement`），并**自动调用 `sdd_pipeline start`** 创建 pipeline、绑定 `pipelineId`。输入区下方仅保留 **`Add`**（用会话 `requirement` 作 plan_steps，按换行拆分调 `add_step`）。**双击页签标题**可随时编辑三字段（均回显当前值）。
+> 行为：`Add` 在**无 pipelineId → 禁用（灰）**、**有 → 可用**。新建会话因自动 start 已绑定 pipeline，`Add` 创建后即可用。`deleteConversation` 删空后**不再自动补建**会话（Chat 区仅剩 `+`）。
+
+### C-01 新建会话弹窗（三必填字段 + 非空校验 + 自动 start）
+
+| 前置 | 输入 | 具体预期 |
+|------|------|----------|
+| 无会话（或任意状态下） | 点 `+` | 弹出 `New Chat` 对话框：`Title` 文本框、`domain_spec` 文本框、`Requirement` 多行文本域，均为空 |
+| 三字段任一为空（如只填 Title） | 点 OK | 弹 `Title, domain_spec and Requirement are all required.` 警告，**不创建会话**；对话框保持打开可继续填 |
+| 三字段留空 | 点 Cancel | **不创建会话**、无新增 tab |
+| Title=`实现 Stop 按钮`、domain_spec=`chat-ui`、Requirement=`实现 Chat 面板 Stop 按钮：流式生成/Agent 应答可被用户中途终止` | 点 OK | ① 新 tab `实现 Stop 按钮` 出现并激活；② `.idea/myplugin-conversations.json` 新增会话：`specDomain="chat-ui"`、`requirement=<原文>`、**`pipelineId=<uuid>`（自动 start 已绑定）**；③ `.idea/myplugin-pipeline.json` 新增该实例（`stage=SPEC`、`specDomain=chat-ui`、`requirement` 原文）；④ 消息区显示 `[sdd_pipeline]` 块（`=== SPEC PIPELINE STARTED ===`、`Pipeline ID: <uuid>`）；⑤ **`Add` 按钮可用**（因已绑定 pipeline）；⑥ `openspec/specs/chat-ui/spec.md` 已生成 |
+| 删除所有会话后 | 查看 | **不再自动补建**一个空会话；Chat 区仅剩 `+` |
+
+### C-01b 重命名弹窗三字段可编辑/回显
+
+| 前置 | 输入 | 具体预期 |
+|------|------|----------|
+| C-01 创建的会话 | 双击页签标题 | 弹窗回显：Title=`实现 Stop 按钮`、domain_spec=`chat-ui`、Requirement=`实现 Chat 面板 Stop 按钮：...` |
+| 改 domain_spec 为 `chat` → OK | 重开弹窗 | domain_spec 框返回 `chat`（已保存） |
+| 改 Requirement 为 `其他需求` → OK | 重开弹窗 | Requirement 框返回 `其他需求` |
+| 清空 Requirement → OK | 重开弹窗 | Requirement 框为空（`requirement` 被置空）；后续 `Add` 将提示缺 requirement |
+
+### C-02 Add 按钮初始可用性（新建会话自动绑定）
+
+| 前置 | 输入 | 具体预期 |
+|------|------|----------|
+| C-01 成功创建并绑定（有 `pipelineId`） | 查看按钮 | `Add` **可用**（绿），因会话已有 pipeline |
+| 删除所有会话后无会话状态 | 查看按钮 | `Add` **禁用（灰）**（无当前会话、无 pipeline） |
+
+### C-03 自动 start 失败/缺前提防护（异常分支，非主流）
+
+> 由于三字段均为新建会话必填（含 domain_spec/requirement），`runStartPipeline` 中的缺前提提示在正常 UI 流程**无法触发**；此用例仅验证：若某历史会话 `specDomain` 或 `requirement` 被清空、且当前无 pipelineId 时，双击标题清空后（或直接构造空字段）在该页签下 `Add` 会提示缺 requirement。无 `Start` 按钮，故不再有"点 Start 触发"分支。
+
+| 前置 | 输入 | 具体预期 |
+|------|------|----------|
+| 历史会话 `specDomain=null`、`requirement=null`（双击标题清空后重开，或构造空字段） | 查看/点 `Add` | 因无 pipelineId，`Add` 禁用；无 `Start` 按钮可点，故**无任何工具调用** |
+
+### C-04 自动 start 结果核验（对应 C-01 断言，独立核验一次）
+
+| 前置 | 输入 | 具体预期 |
+|------|------|----------|
+| C-01 完成（`specDomain=chat-ui`、`requirement` 已填） | 复核落盘 | ① conversations.json 该会话含 `"pipelineId": "<uuid>"`；② pipeline.json 以该 uuid 为 id 的实例 `stage=SPEC`，且 `requirement` 恰好等于会话 `requirement` 字段原文；③ `openspec/specs/chat-ui/spec.md` 已生成 |
+
+### C-05 二次自动 start 防护
+
+| 前置 | 输入 | 具体预期 |
+|------|------|----------|
+| 当前页签已绑定 `pipelineId`（C-01 完成后） | 再点 `+` 新建另一会话，或在已绑定会话上（模拟强制重入） | 新会话互不影响，各自独立绑定 pipelineId；已绑定会话不会创建第二条实例（`runStartPipeline` 里 `pipelineId` 非空 → 直接 return，即使 UI 触发也拦截） |
+
+### C-06 Add 会话 requirement 作 plan_steps
+
+| 前置 | 输入 | 具体预期 |
+|------|------|----------|
+| 当前页签已绑定 pipeline，处于 **SPEC 阶段**，会话 requirement 含两个换行分节（如 `为 Stop 按钮接入流式/Agent 请求取消\n停止后复位 Send/Stop/输入框状态`） | 点 `Add` | 消息区 `[sdd_pipeline]` 块含 `Added 2 plan step(s) to pipeline <uuid>.` 与 `Next: call advance_plan`；`.idea/myplugin-pipeline.json` 该实例 `planSteps` 数组 = requirement 的按行拆分（顺序一致） |
+
+### C-07 Add 缺 requirement / 无绑定防护
+
+| 前置 | 输入 | 具体预期 |
+|------|------|----------|
+| 页签未绑定 pipeline（新建会话前的无会话/历史空 pipelineId 会话） | 查看 `Add` | `Add` 禁用（灰），无法点击 |
+| 已绑定但会话 `requirement` 为空（双击标题清空） | 点 `Add` | 提示 `Set a requirement for this chat: double-click the tab title and edit the requirement field.`；**无工具调用** |
+
+### C-08 Chat 按钮操作写入 ui 通道 trace
+
+| 前置 | 输入 | 具体预期 |
+|------|------|----------|
+| C-01 新建会话（自动 start 1 次）+ 后续点 `Add` 1 次 | 点 `+` → 确认 → 点 `Add` | `.idea/myplugin-conversations.json` 当前会话 trace 新增 2 条 `channel="ui"` 记录：toolName=`sdd_pipeline`，第一条 `arguments` 含 `"action":"start"`（requirement/spec_domain，requirement=会话 requirement）、`result` 含 `=== SPEC PIPELINE STARTED ===`；第二条 `arguments` 含 `"action":"add_step"`（pipeline_id/plan_steps，plan_steps=会话 requirement），`result` 含 `Added N plan step(s)` |
+
+### C-09 Add 结果与 Pipeline 面板联动
+
+| 前置 | 输入 | 具体预期 |
+|------|------|----------|
+| C-06 完成（SPEC + 2 步） | Pipeline tab 点 `Refresh` | 列表出现 `[SPEC] 实现 Chat 面板 Stop 按钮... (chat-ui)`；选中后摘要 `step 1/2`；`Advance Plan` 可用 → 后续复用阶段〇 P-UI / P 系列推进（文本通道 add_step 不再必需，Add 按钮已等价完成） |
+
+---
+
 ## 阶段一：SPEC（需求 → 流水线实例）
 
 ### P-01 启动流水线
 
 | 输入 | 具体预期 | 输出 → 下一流程 |
 |------|----------|-----------------|
-| `pipeline start requirement="新增 Agent 工具 export_plan：读取 docs/plans 下计划并导出为 Markdown 到 docs/plans/export" spec_domain=agent-tools` | 返回 `=== SPEC PIPELINE STARTED ===`，含：`Pipeline ID: <uuid>`、`Requirement: 新增 Agent 工具 export_plan...`、`Stage: SPEC`、`Spec doc: openspec/specs/agent-tools/spec.md`，并提示保存 pipeline_id | **输出的 pipeline_id 是后续所有 add_step / advance_plan / start_tdd 的必传参数**，测试者必须复制保存 |
+| `pipeline start requirement="实现 Chat 面板 Stop 按钮：流式生成/Agent 应答可被用户中途终止，并复位 Send/Stop/输入框状态" spec_domain=chat-ui` | 返回 `=== SPEC PIPELINE STARTED ===`，含：`Pipeline ID: <uuid>`、`Requirement: 实现 Chat 面板 Stop 按钮...`、`Stage: SPEC`、`Spec doc: openspec/specs/chat-ui/spec.md`，并提示保存 pipeline_id | **输出的 pipeline_id 是后续所有 add_step / advance_plan / start_tdd 的必传参数**，测试者必须复制保存 |
 
 **落盘断言（P-01 的真正判据，气泡文本不作断言）：**
 - ① `.idea/myplugin-pipeline.json` 以 `<uuid>` 为 key 的实例，`stage=SPEC`。
 - ② `.idea/myplugin-conversations.json` 中 ASSISTANT 消息的 `thinking` 字段含原始工具输出 `[Tool Result] sdd_pipeline: === SPEC PIPELINE STARTED ===`（LLM 会把工具输出包装成叙述文，最终气泡不可作文本断言）。
-- ③ `openspec/specs/agent-tools/spec.md` 已生成（含 `## Purpose` 与 `### Requirement: 新增 Agent 工具 export_plan...`），可被 `list_specs` 解析——这是 SPEC 阶段**落盘的 SDD 产物**。
+- ③ `openspec/specs/chat-ui/spec.md` 已生成（含 `## Purpose` 与 `### Requirement: 实现 Chat 面板 Stop 按钮...`），可被 `list_specs` 解析——这是 SPEC 阶段**落盘的 SDD 产物**。
 
 ### P-02 缺 requirement 启动（防御）
 
@@ -226,7 +306,7 @@ SPEC → PLAN → TDD → CHANGE → DONE
 
 | 输入 | 具体预期 | 输出 → 下一流程 |
 |------|----------|-----------------|
-| `pipeline add_step pipeline_id=<id> plan_steps="扫描 docs/plans 目录\n导出 Markdown 报告"` | 返回 `Added 2 plan step(s) to pipeline <id>.`，并提示 `Next: call advance_plan` | **plan_steps 被存入实例，共 2 步**。这是后续 start_tdd 的 step_index 依据（0=扫描 docs/plans 目录，1=导出 Markdown 报告） |
+| `pipeline add_step pipeline_id=<id> plan_steps="为 Stop 按钮接入流式/Agent 请求取消\n停止后复位 Send/Stop/输入框 UI 状态"` | 返回 `Added 2 plan step(s) to pipeline <id>.`，并提示 `Next: call advance_plan` | **plan_steps 被存入实例，共 2 步**。这是后续 start_tdd 的 step_index 依据（0=为 Stop 按钮接入流式/Agent 请求取消，1=停止后复位 Send/Stop/输入框 UI 状态） |
 
 备注：`plan_steps` 按换行拆分，空行会被忽略（`addStep` 过滤空白行）。
 
@@ -261,7 +341,7 @@ SPEC → PLAN → TDD → CHANGE → DONE
 
 | 用例 | 输入 | 具体预期 | 输出 → 下一流程 |
 |------|------|----------|-----------------|
-| P-08b | `tdd start_cycle task="扫描 docs/plans 目录"` | `=== TDD Cycle Started ===`，Task、Cycle #、`State: RED`，提示先写失败测试 | **state=RED** → 下一步 write_test |
+| P-08b | `tdd start_cycle task="为 Stop 按钮接入流式/Agent 请求取消"` | `=== TDD Cycle Started ===`，Task、Cycle #、`State: RED`，提示先写失败测试 | **state=RED** → 下一步 write_test |
 | P-08c | `tdd write_test` | (RED→RED_VERIFY) 提示运行测试确认失败 | **state=RED_VERIFY** → 下一步 verify_test |
 | P-08d | `tdd verify_test test_output="BUILD FAILED\n1 test failed: expected 2 but was 1"` | (RED_VERIFY→GREEN)（测试按预期失败） | **state=GREEN** → 下一步 write_code |
 | P-08e | `tdd write_code` | (GREEN→GREEN_VERIFY) | **state=GREEN_VERIFY** → 下一步 verify_code |
@@ -286,7 +366,7 @@ SPEC → PLAN → TDD → CHANGE → DONE
 
 | 输入 | 具体预期 | 输出 → 下一流程 |
 |------|----------|-----------------|
-| `pipeline start_tdd pipeline_id=<id> step_index=1` | 返回 `=== STAGE: TDD (step 2/2) ===`、`Task: 导出 Markdown 报告`、提示 `Use 'tdd_enforcer start_cycle' with this task...complete_tdd with step_index=1` | **currentStepIndex 更新为 1** → 再跑一轮 P-08b~g，mark_refactor 后 allStepsDone → CHANGE |
+| `pipeline start_tdd pipeline_id=<id> step_index=1` | 返回 `=== STAGE: TDD (step 2/2) ===`、`Task: 停止后复位 Send/Stop/输入框 UI 状态`、提示 `Use 'tdd_enforcer start_cycle' with this task...complete_tdd with step_index=1` | **currentStepIndex 更新为 1** → 再跑一轮 P-08b~g，mark_refactor 后 allStepsDone → CHANGE |
 
 （也可用 `pipeline complete_tdd step_index=<当前>` 手动完成步骤，但推荐 tdd mark_refactor 联动。）
 
@@ -329,7 +409,7 @@ SPEC → PLAN → TDD → CHANGE → DONE
 | 用例 | 输入 | 具体预期 |
 |------|------|----------|
 | P-T01a | `pipeline start requirement="No domain requirement"`（不带 spec_domain） | 输出含 `Note: no spec_domain given, no spec doc generated.`；**不创建** `openspec/specs/` 目录；面板列表中该实例显示 `no-spec`（见 P-UI13） |
-| P-T01b | 先执行 P-01（agent-tools 域 spec 已生成），再 `pipeline start requirement="Second agent-tools req" spec_domain=agent-tools` | 输出含 `openspec/specs/agent-tools/spec.md (already exists)`；磁盘上 `spec.md` **保持第一次的内容不被覆盖**（读文件比对） |
+| P-T01b | 先执行 P-01（chat-ui 域 spec 已生成），再 `pipeline start requirement="Second chat-ui req" spec_domain=chat-ui` | 输出含 `openspec/specs/chat-ui/spec.md (already exists)`；磁盘上 `spec.md` **保持第一次的内容不被覆盖**（读文件比对） |
 | P-T01c | `pipeline start requirement="User can reset password" spec_domain=reset note_zh="密码重置备注"`（用新 domain 避免 P-T01b 干扰） | 生成的 `openspec/specs/reset/spec.md` 正文保持英文，**末尾**含 `> Note (Chinese): 密码重置备注` |
 
 ### P-T02 status：不带 pipeline_id（全量明细）
@@ -400,7 +480,7 @@ SPEC → PLAN → TDD → CHANGE → DONE
 
 | 步骤 | 入口 | 操作 | 预期 |
 |------|------|------|------|
-| 1 | 文本 | `pipeline start requirement="新增 Agent 工具 export_plan：读取 docs/plans 下计划并导出为 Markdown 到 docs/plans/export" spec_domain=agent-tools` | SPEC 实例已建 |
+| 1 | 文本 | `pipeline start requirement="实现 Chat 面板 Stop 按钮：流式生成/Agent 应答可被用户中途终止，并复位 Send/Stop/输入框状态" spec_domain=chat-ui` | SPEC 实例已建 |
 | 2 | 面板 | `Refresh` → 选中该实例 → 摘要 `[SPEC]` | 列表/摘要正确 |
 | 3 | 文本 | `pipeline add_step pipeline_id=<id> plan_steps="步1\n步2"` | 加入 2 步 |
 | 4 | 面板 | 点 `Advance Plan` | `[PLAN]` |
@@ -489,13 +569,15 @@ SPEC → PLAN → TDD → CHANGE → DONE
 5. **`complete_tdd` 需要 `step_index` 等于当前 `currentStepIndex`**，否则返回 Error（`completeStepTdd` 校验）。
 6. **非法阶段迁移会被拒绝**：例如在 SPEC 阶段直接 `complete_tdd` 会因 currentStepIndex 不匹配而返回 Error。
 7. **面板是快照驱动**：文本通道对流水线的任何变更，需在面板点 `Refresh` 才可见；面板操作会自动刷新列表并默认选中第一条。
-8. **面板手填类操作（Start 需步骤已存在、Add Steps、Link Change、Create Change）**：面板一律不提供输入框，命中需手填参数的按钮时给出"走文本通道"提示——这是设计预期，不是缺陷。
+8. **面板手填类操作（Add Steps、Link Change、Create Change）**：面板一律不提供输入框，命中需手填参数的按钮时给出"走文本通道"提示——这是设计预期，不是缺陷。
 
 ---
 
 ## 完整示例：新功能开发全流程测试（以新增 Agent 工具 `export_plan` 为例）
 
 > 完整示例（REG-0 ~ REG-19，含需求说明、分步实现、逐条输入与预期输出、回归清单）已迁移至 **`docs/USAGE.md` 第 7 节**，此处不再重复。执行时请参考该节，并按上面的 P/E2E 用例编号填入"验证结果记录"。
+>
+> 注：本文 P 系列 / E2E-03 的示例需求现统一为**未实现功能** `Chat Stop 按钮`（实现流式/Agent 应答可被中途终止并复位 UI），域 `chat-ui`——与 USAGE.md §7 的 export_plan 完成案例区分，避免把已完成工具当作流水线示例。
 
 ---
 
@@ -507,6 +589,16 @@ SPEC → PLAN → TDD → CHANGE → DONE
 |------|------|------|
 | P-UI0 面板加载 | | |
 | P-UI1 列表显示实例内容 | | |
+| C-01 新建会话弹窗+自动 start | | |
+| C-01b 重命名三字段回显 | | |
+| C-02 Add 可用性 | | |
+| C-03 自动 start 防护 | | |
+| C-04 自动 start 结果核验 | | |
+| C-05 二次 start 防护 | | |
+| C-06 Add requirement→plan_steps | | |
+| C-07 Add 缺requirement/无绑定防护 | | |
+| C-08 Chat 按钮 ui trace | | |
+| C-09 与 Pipeline 面板联动 | | |
 | P-UI2 选中实例→摘要刷新 | | |
 | P-UI3 选中后点按钮执行 | | |
 | P-UI4 多实例区分选中 | | |

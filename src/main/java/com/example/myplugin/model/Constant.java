@@ -13,7 +13,7 @@ public class Constant {
     public static final Integer MAX_RETRIES = 1;
     public static final Integer TIMEOUT = 300;
     public static final Integer AGENT_MAX_ITERATIONS = 15;
-    public static final Integer AGENT_MAX_TOOL_CALLS = 8;
+    public static final Integer AGENT_MAX_TOOL_CALLS = 16;
     public static final Integer AGENT_MAX_HISTORY = 20;
     public static final Integer AGENT_MAX_CONTEXT_MESSAGES = 6;
 

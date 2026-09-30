@@ -18,19 +18,70 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
 
 public class LlamaChatStreamClient {
 
     private static final Gson GSON = new Gson();
 
-    public static void streamChat(String modelName, List<Conversation.ChatMessage> messages,
-                                  BiConsumer<String, String> onDelta,
-                                  BiConsumer<String, String> onComplete,
-                                  BiConsumer<Boolean, String> onError) {
+    public static final class Handle {
+        private final AtomicBoolean cancelled = new AtomicBoolean(false);
+        private volatile InputStream responseStream;
+        private final StringBuilder reasoning = new StringBuilder();
+        private final StringBuilder content = new StringBuilder();
+
+        void attachStream(InputStream stream) {
+            this.responseStream = stream;
+            if (cancelled.get()) {
+                closeQuietly(stream);
+            }
+        }
+
+        void appendReasoning(String text) {
+            reasoning.append(text);
+        }
+
+        void appendContent(String text) {
+            content.append(text);
+        }
+
+        public void cancel() {
+            cancelled.set(true);
+            InputStream stream = responseStream;
+            if (stream != null) {
+                closeQuietly(stream);
+            }
+        }
+
+        public boolean isCancelled() {
+            return cancelled.get();
+        }
+
+        public String getReasoning() {
+            return reasoning.toString();
+        }
+
+        public String getContent() {
+            return content.toString();
+        }
+
+        private static void closeQuietly(InputStream stream) {
+            try {
+                stream.close();
+            } catch (IOException ignored) {
+            }
+        }
+    }
+
+    public static Handle streamChat(String modelName, List<Conversation.ChatMessage> messages,
+                                    BiConsumer<String, String> onDelta,
+                                    BiConsumer<String, String> onComplete,
+                                    BiConsumer<Boolean, String> onError) {
 
         PluginStateService state = PluginStateService.getInstance();
         String baseUrl = state.getLlamaCppUrl();
+        Handle handle = new Handle();
 
         new Thread(() -> {
             try {
@@ -55,19 +106,31 @@ public class LlamaChatStreamClient {
                         reqBuilder.build(),
                         HttpResponse.BodyHandlers.ofInputStream());
 
+                handle.attachStream(response.body());
+
                 int statusCode = response.statusCode();
-                if (statusCode != 200) {
+                if (statusCode != 200 && !handle.isCancelled()) {
                     String body = new String(response.body().readAllBytes(), StandardCharsets.UTF_8);
                     onError.accept(false, "HTTP " + statusCode + ": " + body);
                     return;
                 }
+                if (handle.isCancelled()) {
+                    onComplete.accept(handle.getReasoning(), handle.getContent());
+                    return;
+                }
 
-                parseSSEStream(response.body(), onDelta, onComplete, onError);
+                parseSSEStream(handle, onDelta, onComplete, onError);
 
             } catch (Exception e) {
-                onError.accept(false, e.getMessage());
+                if (handle.isCancelled()) {
+                    onComplete.accept(handle.getReasoning(), handle.getContent());
+                } else {
+                    onError.accept(false, e.getMessage());
+                }
             }
         }, "llama-chat-stream").start();
+
+        return handle;
     }
 
     private static JsonObject buildRequest(String modelName, List<Conversation.ChatMessage> messages,
@@ -91,28 +154,31 @@ public class LlamaChatStreamClient {
         return body;
     }
 
-    private static void parseSSEStream(InputStream inputStream,
+    private static void parseSSEStream(Handle handle,
                                        BiConsumer<String, String> onDelta,
                                        BiConsumer<String, String> onComplete,
                                        BiConsumer<Boolean, String> onError) throws IOException {
-        StringBuilder reasoning = new StringBuilder();
-        StringBuilder content = new StringBuilder();
-
         try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
+                new InputStreamReader(handle.responseStream, StandardCharsets.UTF_8))) {
 
             StringBuilder dataBuffer = new StringBuilder();
             String line;
 
             while ((line = reader.readLine()) != null) {
+                if (handle.isCancelled()) {
+                    break;
+                }
                 if (line.startsWith("data: ")) {
                     dataBuffer.append(line.substring(6));
                 } else if (line.isEmpty()) {
                     if (dataBuffer.length() > 0) {
                         String data = dataBuffer.toString().trim();
                         if ("[DONE]".equals(data)) {
-                            onComplete.accept(reasoning.toString(), content.toString());
+                            onComplete.accept(handle.getReasoning(), handle.getContent());
                             return;
+                        }
+                        if (handle.isCancelled()) {
+                            break;
                         }
                         try {
                             JsonObject json = GSON.fromJson(data, JsonObject.class);
@@ -120,12 +186,12 @@ public class LlamaChatStreamClient {
                             if (delta != null) {
                                 if (delta.has("reasoning_content") && !delta.get("reasoning_content").isJsonNull()) {
                                     String text = delta.get("reasoning_content").getAsString();
-                                    reasoning.append(text);
+                                    handle.appendReasoning(text);
                                     onDelta.accept("reasoning", text);
                                 }
                                 if (delta.has("content") && !delta.get("content").isJsonNull()) {
                                     String text = delta.get("content").getAsString();
-                                    content.append(text);
+                                    handle.appendContent(text);
                                     onDelta.accept("content", text);
                                 }
                             }
@@ -137,7 +203,7 @@ public class LlamaChatStreamClient {
             }
         }
 
-        onComplete.accept(reasoning.toString(), content.toString());
+        onComplete.accept(handle.getReasoning(), handle.getContent());
     }
 
     private static JsonObject extractDelta(JsonObject json) {

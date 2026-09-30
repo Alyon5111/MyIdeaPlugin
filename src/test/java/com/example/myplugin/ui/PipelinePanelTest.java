@@ -8,6 +8,7 @@ import com.google.gson.JsonParser;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import javax.swing.tree.DefaultMutableTreeNode;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -73,28 +74,57 @@ class PipelinePanelTest {
     void emptyStateShowsPlaceholderAndDisablesSelectionButtons() {
         assertEquals(0, panel.instanceModel.size());
         assertEquals("No active pipeline instance selected.", panel.summaryLabel.getText());
-        assertFalse(panel.advancePlanButton.isEnabled());
-        assertFalse(panel.startTddButton.isEnabled());
-        assertFalse(panel.completeTddButton.isEnabled());
-        assertFalse(panel.completeButton.isEnabled());
-        assertFalse(panel.statusButton.isEnabled());
-        assertFalse(panel.linkChangeButton.isEnabled());
+        assertFalse(panel.advancePlanItem.isEnabled());
+        assertFalse(panel.startTddItem.isEnabled());
+        assertFalse(panel.executeStepItem.isEnabled());
+        assertFalse(panel.completeItem.isEnabled());
+        assertFalse(panel.statusItem.isEnabled());
+        assertFalse(panel.linkChangeItem.isEnabled());
         // Always available regardless of selection:
-        assertTrue(panel.exportPlanButton.isEnabled());
-        assertTrue(panel.listButton.isEnabled());
-        assertTrue(panel.createChangeButton.isEnabled());
+        assertTrue(panel.exportPlanItem.isEnabled());
+        assertTrue(panel.listItem.isEnabled());
+        assertTrue(panel.createChangeItem.isEnabled());
     }
 
     @Test
-    void doneInstancesAreNotListed() {
+    void doneInstancesListedUnderCompletedGroup() {
         createInstance("auth", "active requirement");
         SpecPipelineInstance done = createInstance("billing", "finished requirement");
         service.advance(done.getId(), PipelineStage.DONE, "done");
 
         refresh();
 
-        assertEquals(1, panel.instanceModel.size());
+        assertEquals(2, panel.instanceModel.size());
         assertEquals("[SPEC] active requirement  (auth)", panel.instanceModel.get(0));
+        assertEquals("[DONE] finished requirement  (billing)", panel.instanceModel.get(1));
+
+        assertEquals(2, panel.treeRoot.getChildCount(), "active + completed groups expected");
+
+        DefaultMutableTreeNode activeGroup = (DefaultMutableTreeNode) panel.treeRoot.getChildAt(0);
+        DefaultMutableTreeNode doneGroup = (DefaultMutableTreeNode) panel.treeRoot.getChildAt(1);
+        assertEquals("Active (1)", activeGroup.getUserObject());
+        assertEquals("Completed (1)", doneGroup.getUserObject());
+
+        panel.selectFirstInstance();
+        SpecPipelineInstance selected = selectedByTree();
+        assertNotNull(selected);
+        assertEquals("active requirement", selected.getRequirement());
+        assertEquals("SPEC", selected.getCurrentStage().name());
+    }
+
+    private SpecPipelineInstance selectedByTree() {
+        if (panel.instanceTree.isSelectionEmpty()) {
+            return null;
+        }
+        DefaultMutableTreeNode node = (DefaultMutableTreeNode) panel.instanceTree.getLastSelectedPathComponent();
+        while (node != null && node != panel.treeRoot) {
+            Object user = node.getUserObject();
+            if (user instanceof SpecPipelineInstance inst) {
+                return inst;
+            }
+            node = (DefaultMutableTreeNode) node.getParent();
+        }
+        return null;
     }
 
     // ---------- list rendering ----------
@@ -135,7 +165,7 @@ class PipelinePanelTest {
         service.startStepTdd(inst.getId(), 0);
         refresh();
 
-        panel.instanceList.setSelectedIndex(0);
+        panel.selectFirstInstance();
         assertTrue(panel.summaryLabel.getText().startsWith("[PLAN] step 1/2"));
         assertTrue(panel.summaryLabel.getText().contains("requirement for summary"));
     }
@@ -143,7 +173,7 @@ class PipelinePanelTest {
     // ---------- button enablement per stage ----------
 
     private void selectFirst() {
-        panel.instanceList.setSelectedIndex(0);
+        panel.selectFirstInstance();
     }
 
     @Test
@@ -152,11 +182,11 @@ class PipelinePanelTest {
         refresh();
         selectFirst();
 
-        assertTrue(panel.advancePlanButton.isEnabled());
-        assertFalse(panel.startTddButton.isEnabled());
-        assertFalse(panel.completeTddButton.isEnabled());
-        assertFalse(panel.completeButton.isEnabled());
-        assertTrue(panel.statusButton.isEnabled());
+        assertTrue(panel.advancePlanItem.isEnabled());
+        assertFalse(panel.startTddItem.isEnabled());
+        assertFalse(panel.executeStepItem.isEnabled());
+        assertFalse(panel.completeItem.isEnabled());
+        assertTrue(panel.statusItem.isEnabled());
     }
 
     @Test
@@ -166,24 +196,37 @@ class PipelinePanelTest {
         refresh();
         selectFirst();
 
-        // Advance Plan is SPEC->PLAN, so it is disabled once the instance is in PLAN.
-        assertFalse(panel.advancePlanButton.isEnabled());
-        assertTrue(panel.startTddButton.isEnabled());
-        assertFalse(panel.completeTddButton.isEnabled());
-        assertFalse(panel.completeButton.isEnabled());
+// Advance Plan is SPEC->PLAN, so it is disabled once the instance is in PLAN.
+        assertFalse(panel.advancePlanItem.isEnabled());
+        assertTrue(panel.startTddItem.isEnabled());
+        assertFalse(panel.executeStepItem.isEnabled());
+        assertFalse(panel.completeItem.isEnabled());
     }
 
     @Test
-    void stageTddEnablesStartAndCompleteTdd() {
+    void stageTddEnablesStartTdd() {
         SpecPipelineInstance inst = createInstance("auth", "req");
         service.advance(inst.getId(), PipelineStage.TDD, "tdd");
         refresh();
         selectFirst();
 
-        assertFalse(panel.advancePlanButton.isEnabled());
-        assertTrue(panel.startTddButton.isEnabled());
-        assertTrue(panel.completeTddButton.isEnabled());
-        assertFalse(panel.completeButton.isEnabled());
+        assertFalse(panel.advancePlanItem.isEnabled());
+        assertTrue(panel.startTddItem.isEnabled());
+        assertFalse(panel.executeStepItem.isEnabled());
+        assertFalse(panel.completeItem.isEnabled());
+    }
+
+    @Test
+    void stageTddWithActiveStepEnablesExecuteStep() {
+        SpecPipelineInstance inst = createInstance("auth", "req");
+        service.advance(inst.getId(), PipelineStage.TDD, "tdd");
+        service.addPlanStep(inst.getId(), "stop button");
+        service.startStepTdd(inst.getId(), 0);
+        refresh();
+        selectFirst();
+
+        assertTrue(panel.startTddItem.isEnabled());
+        assertTrue(panel.executeStepItem.isEnabled());
     }
 
     @Test
@@ -193,11 +236,10 @@ class PipelinePanelTest {
         refresh();
         selectFirst();
 
-        assertFalse(panel.advancePlanButton.isEnabled());
-        assertFalse(panel.startTddButton.isEnabled());
-        assertFalse(panel.completeTddButton.isEnabled());
-        assertTrue(panel.completeButton.isEnabled());
-        assertTrue(panel.linkChangeButton.isEnabled());
+        assertFalse(panel.advancePlanItem.isEnabled());
+        assertFalse(panel.startTddItem.isEnabled());
+        assertTrue(panel.completeItem.isEnabled());
+        assertTrue(panel.linkChangeItem.isEnabled());
     }
 
     // ---------- button actions ----------
@@ -208,7 +250,7 @@ class PipelinePanelTest {
         refresh();
         selectFirst();
 
-        panel.advancePlanButton.doClick();
+        panel.advancePlanItem.doClick();
 
         assertEquals("sdd_pipeline|{\"action\":\"advance_plan\",\"pipeline_id\":\"" + inst.getId() + "\"}",
                 runner.lastCall());
@@ -223,7 +265,7 @@ class PipelinePanelTest {
         refresh();
         selectFirst();
 
-        panel.startTddButton.doClick();
+        panel.startTddItem.doClick();
 
         JsonObject args = runner.lastArgs();
         assertEquals("start_tdd", args.get("action").getAsString());
@@ -241,7 +283,7 @@ class PipelinePanelTest {
         refresh();
         selectFirst();
 
-        panel.startTddButton.doClick();
+        panel.startTddItem.doClick();
 
         JsonObject args = runner.lastArgs();
         assertEquals("start_tdd", args.get("action").getAsString());
@@ -255,7 +297,7 @@ class PipelinePanelTest {
         refresh();
         selectFirst();
 
-        panel.startTddButton.doClick();
+        panel.startTddItem.doClick();
 
         assertTrue(runner.calls.isEmpty(), "no tool call expected without plan steps");
         assertTrue(panel.output.getText().contains("No plan steps"));
@@ -270,27 +312,10 @@ class PipelinePanelTest {
         refresh();
         selectFirst();
 
-        panel.startTddButton.doClick();
+        panel.startTddItem.doClick();
 
         assertTrue(runner.calls.isEmpty(), "no tool call expected when all steps started");
         assertTrue(panel.output.getText().contains("All plan steps already started"));
-    }
-
-    @Test
-    void completeTddSendsCurrentStepIndex() {
-        SpecPipelineInstance inst = createInstance("auth", "req");
-        service.advance(inst.getId(), PipelineStage.TDD, "tdd");
-        service.addPlanStep(inst.getId(), "step one");
-        service.addPlanStep(inst.getId(), "step two");
-        service.startStepTdd(inst.getId(), 1);
-        refresh();
-        selectFirst();
-
-        panel.completeTddButton.doClick();
-
-        JsonObject args = runner.lastArgs();
-        assertEquals("complete_tdd", args.get("action").getAsString());
-        assertEquals(1, args.get("step_index").getAsInt());
     }
 
     @Test
@@ -300,7 +325,7 @@ class PipelinePanelTest {
         refresh();
         selectFirst();
 
-        panel.completeButton.doClick();
+        panel.completeItem.doClick();
 
         JsonObject args = runner.lastArgs();
         assertEquals("complete", args.get("action").getAsString());
@@ -313,7 +338,7 @@ class PipelinePanelTest {
         refresh();
         selectFirst();
 
-        panel.statusButton.doClick();
+        panel.statusItem.doClick();
 
         JsonObject args = runner.lastArgs();
         assertNull(args.get("action"), "status must not send an action");
@@ -322,7 +347,7 @@ class PipelinePanelTest {
 
     @Test
     void listSendsListActionWithoutPipelineId() {
-        panel.listButton.doClick();
+        panel.listItem.doClick();
 
         JsonObject args = runner.lastArgs();
         assertEquals("list", args.get("action").getAsString());
@@ -331,7 +356,7 @@ class PipelinePanelTest {
 
     @Test
     void exportPlanInvokesExportPlanToolWithoutSelection() {
-        panel.exportPlanButton.doClick();
+        panel.exportPlanItem.doClick();
 
         assertEquals("export_plan|{}", runner.lastCall());
     }
@@ -340,35 +365,49 @@ class PipelinePanelTest {
     void selectionRequiredActionsAreDisabledWhenNothingSelected() {
         createInstance("auth", "req");
         refresh();
-        panel.instanceList.clearSelection();
+        panel.instanceTree.clearSelection();
 
         assertEquals("No active pipeline instance selected.", panel.summaryLabel.getText());
-        assertFalse(panel.advancePlanButton.isEnabled());
-        assertFalse(panel.startTddButton.isEnabled());
-        assertFalse(panel.completeTddButton.isEnabled());
-        assertFalse(panel.completeButton.isEnabled());
-        assertFalse(panel.statusButton.isEnabled());
-        assertFalse(panel.linkChangeButton.isEnabled());
+        assertFalse(panel.advancePlanItem.isEnabled());
+        assertFalse(panel.startTddItem.isEnabled());
+        assertFalse(panel.executeStepItem.isEnabled());
+        assertFalse(panel.completeItem.isEnabled());
+        assertFalse(panel.statusItem.isEnabled());
+        assertFalse(panel.linkChangeItem.isEnabled());
         // Buttons that never require a selection stay enabled:
-        assertTrue(panel.exportPlanButton.isEnabled());
-        assertTrue(panel.listButton.isEnabled());
-        assertTrue(panel.createChangeButton.isEnabled());
+        assertTrue(panel.exportPlanItem.isEnabled());
+        assertTrue(panel.listItem.isEnabled());
+        assertTrue(panel.createChangeItem.isEnabled());
     }
 
     @Test
-    void manualButtonsExplainToUseTextChannel() {
+    void createChangeItemExplainsToUseTextChannel() {
         createInstance("auth", "req");
         refresh();
         selectFirst();
 
-        panel.createChangeButton.doClick();
-        panel.linkChangeButton.doClick();
+        panel.createChangeItem.doClick();
 
         assertTrue(runner.calls.isEmpty(), "manual buttons must not call tools");
         String text = panel.output.getText();
         assertTrue(text.contains("Create Change requires manual parameters"));
-        assertTrue(text.contains("Link Change requires manual parameters"));
         assertTrue(text.contains("text command channel"));
+    }
+
+    @Test
+    void linkChangeItemBindsChangeNameToPipeline() {
+        SpecPipelineInstance inst = createInstance("auth", "req");
+        refresh();
+        selectFirst();
+        panel.changeNamePrompt = current -> "stop-button-cancel";
+
+        panel.linkChangeItem.doClick();
+
+        JsonObject args = runner.lastArgs();
+        assertNotNull(args);
+        assertEquals("link_change", args.get("action").getAsString());
+        assertEquals(inst.getId(), args.get("pipeline_id").getAsString());
+        assertEquals("stop-button-cancel", args.get("change_name").getAsString());
     }
 
     @Test
@@ -378,7 +417,7 @@ class PipelinePanelTest {
         selectFirst();
         runner.toThrow = new IllegalStateException("boom");
 
-        panel.advancePlanButton.doClick();
+        panel.advancePlanItem.doClick();
 
         assertTrue(panel.output.getText().contains("Error: boom"), panel.output.getText());
     }
@@ -390,7 +429,7 @@ class PipelinePanelTest {
         selectFirst();
         runner.result = "PIPELINE RESULT: " + inst.getId();
 
-        panel.statusButton.doClick();
+        panel.statusItem.doClick();
 
         assertTrue(panel.output.getText().contains("PIPELINE RESULT: " + inst.getId()));
     }

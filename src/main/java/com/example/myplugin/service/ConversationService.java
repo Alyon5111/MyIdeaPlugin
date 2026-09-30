@@ -22,7 +22,20 @@ public class ConversationService {
         loadFromDisk();
     }
 
+    private ConversationService() {
+        project = null;
+        conversations = new ArrayList<>();
+    }
+
+    /** In-memory service with no persistence and no IntelliJ project, for tests. */
+    public static ConversationService inMemory() {
+        return new ConversationService();
+    }
+
     private void loadFromDisk() {
+        if (project == null) {
+            return;
+        }
         List<Conversation> saved = ConversationStorageService.load(project);
         conversations.addAll(saved);
         conversationCounter = saved.size();
@@ -56,7 +69,10 @@ public class ConversationService {
         save();
         if (currentConversation == conv) {
             if (conversations.isEmpty()) {
-                createNewConversation(null);
+                currentConversation = null;
+                if (onConversationChanged != null) {
+                    onConversationChanged.accept(null);
+                }
             } else {
                 switchTo(conversations.get(0));
             }

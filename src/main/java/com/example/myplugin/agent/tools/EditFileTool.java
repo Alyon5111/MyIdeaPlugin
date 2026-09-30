@@ -3,18 +3,20 @@ package com.example.myplugin.agent.tools;
 import com.example.myplugin.agent.AgentContext;
 import com.example.myplugin.agent.AgentTool;
 import com.google.gson.JsonObject;
-import com.intellij.openapi.application.WriteAction;
+import com.intellij.openapi.application.Application;
+import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.command.WriteCommandAction;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
-import com.intellij.openapi.project.Project;
 import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
 import org.jetbrains.annotations.NotNull;
 
+import javax.swing.SwingUtilities;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -69,45 +71,56 @@ public class EditFileTool implements AgentTool {
             return "Error: file not found: " + path;
         }
 
-        Project project = context.getProject();
-
+        String updated;
         try {
-            return WriteAction.compute(() -> {
-                VirtualFile vf = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(filePath);
-                if (vf == null) {
-                    return "Error: cannot find file in IDE: " + path;
-                }
+            String content = Files.readString(filePath, StandardCharsets.UTF_8);
 
-                Document doc = FileDocumentManager.getInstance().getDocument(vf);
-                if (doc == null) {
-                    return "Error: cannot get document for file: " + path;
-                }
+            int count = countOccurrences(content, oldString);
+            if (count == 0) {
+                return "Error: old_string not found in " + path;
+            }
+            if (count > 1) {
+                return "Error: old_string found " + count + " times in " + path + ". Must be unique. Provide more context.";
+            }
 
-                String content = doc.getText();
-
-                int count = countOccurrences(content, oldString);
-                if (count == 0) {
-                    return "Error: old_string not found in " + path;
-                }
-                if (count > 1) {
-                    return "Error: old_string found " + count + " times in " + path + ". Must be unique. Provide more context.";
-                }
-
-                int startIdx = content.indexOf(oldString);
-                final int start = startIdx;
-                final int end = startIdx + oldString.length();
-
-                WriteCommandAction.runWriteCommandAction(project, () -> {
-                    doc.replaceString(start, end, newString);
-                });
-
-                FileDocumentManager.getInstance().saveDocument(doc);
-
-                return "File edited successfully: " + path;
-            });
-        } catch (Exception e) {
+            updated = content.replace(oldString, newString);
+            Files.writeString(filePath, updated, StandardCharsets.UTF_8);
+        } catch (IOException e) {
             LOG.warn("EditFileTool failed", e);
             return "Error editing file: " + e.getMessage();
+        }
+
+        syncOpenDocumentIfNeeded(filePath, updated);
+        return "File edited successfully: " + path;
+    }
+
+    /**
+     * If the file is currently open in the IDE, push the new bytes into its Document on the EDT
+     * (from a background thread this would otherwise throw the EDT-only assertion).
+     */
+    private void syncOpenDocumentIfNeeded(Path filePath, String updated) {
+        Application app = ApplicationManager.getApplication();
+        if (app == null || app.isDisposed()) {
+            return;
+        }
+        Runnable updater = () -> {
+            VirtualFile vf = LocalFileSystem.getInstance().findFileByNioFile(filePath);
+            if (vf == null) {
+                return;
+            }
+            Document doc = FileDocumentManager.getInstance().getDocument(vf);
+            if (doc == null) {
+                return;
+            }
+            WriteCommandAction.runWriteCommandAction(context.getProject(), () -> {
+                doc.setText(updated);
+                FileDocumentManager.getInstance().saveDocument(doc);
+            });
+        };
+        if (SwingUtilities.isEventDispatchThread()) {
+            updater.run();
+        } else {
+            app.invokeAndWait(updater);
         }
     }
 

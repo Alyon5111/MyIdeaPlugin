@@ -119,6 +119,9 @@ public class Conversation {
 
     private final String id;
     private String title;
+    private String specDomain;
+    private String requirement;
+    private String pipelineId;
     private final List<ChatMessage> messages;
     private final List<TraceEntry> trace = new ArrayList<>();
     private final LocalDateTime createdAt;
@@ -142,6 +145,30 @@ public class Conversation {
 
     public void setTitle(String title) {
         this.title = title;
+    }
+
+    public String getSpecDomain() {
+        return specDomain;
+    }
+
+    public void setSpecDomain(String specDomain) {
+        this.specDomain = specDomain;
+    }
+
+    public String getRequirement() {
+        return requirement;
+    }
+
+    public void setRequirement(String requirement) {
+        this.requirement = requirement;
+    }
+
+    public String getPipelineId() {
+        return pipelineId;
+    }
+
+    public void setPipelineId(String pipelineId) {
+        this.pipelineId = pipelineId;
     }
 
     public List<ChatMessage> getMessages() {
