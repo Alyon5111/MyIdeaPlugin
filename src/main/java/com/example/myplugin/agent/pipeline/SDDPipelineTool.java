@@ -18,6 +18,8 @@ import java.util.Locale;
 public class SDDPipelineTool implements AgentTool {
 
     private static final String SPECS_REL = "openspec/specs";
+    /** Prefix marking a plan step as a verification/regression gate instead of a TDD cycle. */
+    private static final String VERIFY_PREFIX = "[verify]";
 
     private final PipelineService pipeline;
     private final Path baseDir;
@@ -43,7 +45,8 @@ public class SDDPipelineTool implements AgentTool {
     @Override
     public String description() {
         return "Drive the Spec-Driven Development pipeline: SPEC -> PLAN -> TDD -> Change -> DONE. " +
-                "Each plan step is executed as one TDD cycle (RED-GREEN-REFACTOR). Change is created at the end.";
+                "Each plan step is executed as one TDD cycle (RED-GREEN-REFACTOR); a step marked 'verify' " +
+                "instead runs the full regression suite (no TDD cycle). Change is created at the end.";
     }
 
     @Override
@@ -53,7 +56,7 @@ public class SDDPipelineTool implements AgentTool {
             .description(description())
             .parameters(JsonObjectSchema.builder()
                 .addProperty("action", JsonStringSchema.builder()
-                    .description("Action: start, add_step, advance_plan, start_tdd, complete_tdd, link_change, complete, status, list, next_step")
+                    .description("Action: start, add_step, advance_plan, start_tdd, complete_tdd, set_step_kind, link_change, complete, status, list, next_step")
                     .build())
                 .addProperty("spec_domain", JsonStringSchema.builder()
                     .description("OpenSpec domain name (for start)")
@@ -71,7 +74,10 @@ public class SDDPipelineTool implements AgentTool {
                     .description("Plan file name in docs/plans (for advance_plan)")
                     .build())
                 .addProperty("plan_steps", JsonStringSchema.builder()
-                    .description("Line-separated implementation steps (for add_step)")
+                    .description("Line-separated implementation steps (for add_step). Prefix a line with [verify] to mark it a regression gate (no TDD cycle) instead of a code step.")
+                    .build())
+                .addProperty("kind", JsonStringSchema.builder()
+                    .description("Step kind: 'code' (TDD cycle, default) or 'verify' (run the full regression suite; for set_step_kind)")
                     .build())
                 .addProperty("step_index", JsonStringSchema.builder()
                     .description("Plan step index 0-based (for start_tdd/complete_tdd)")
@@ -120,6 +126,8 @@ public class SDDPipelineTool implements AgentTool {
                     return startTdd(arguments);
                 case "complete_tdd":
                     return completeTdd(arguments);
+                case "set_step_kind":
+                    return setStepKind(arguments);
                 case "link_change":
                     return linkChange(arguments);
                 case "complete":
@@ -131,7 +139,7 @@ public class SDDPipelineTool implements AgentTool {
                 case "next_step":
                     return nextStep(arguments);
                 default:
-                    return "Unknown action: " + action + ". Use: start, add_step, advance_plan, start_tdd, complete_tdd, link_change, complete, status, list, next_step";
+                    return "Unknown action: " + action + ". Use: start, add_step, advance_plan, start_tdd, complete_tdd, set_step_kind, link_change, complete, status, list, next_step";
             }
         } catch (Exception e) {
             return "Error: " + e.getMessage();
@@ -234,7 +242,13 @@ public class SDDPipelineTool implements AgentTool {
         for (String step : steps) {
             String trimmed = step.trim();
             if (trimmed.isEmpty()) continue;
-            pipeline.addPlanStep(id, trimmed);
+            String kind = "code";
+            if (trimmed.regionMatches(true, 0, VERIFY_PREFIX, 0, VERIFY_PREFIX.length())) {
+                kind = "verify";
+                trimmed = trimmed.substring(VERIFY_PREFIX.length()).trim();
+                if (trimmed.isEmpty()) continue;
+            }
+            pipeline.addPlanStep(id, trimmed, kind);
             added++;
         }
 
@@ -345,6 +359,24 @@ public class SDDPipelineTool implements AgentTool {
         int nextStep = instance.getCurrentStepIndex() + 1;
         return "=== TDD DONE for step " + (stepIndex + 1) + " ===\n" +
                 "Next: call start_tdd with step_index=" + nextStep + " for the next step.";
+    }
+
+    private String setStepKind(JsonObject arguments) {
+        String id = requireId(arguments);
+        if (id == null) return "Error: 'pipeline_id' is required";
+        int stepIndex = arguments.has("step_index") ? arguments.get("step_index").getAsInt() : -1;
+        if (stepIndex < 0) return "Error: 'step_index' is required";
+        String kind = arguments.has("kind") ? arguments.get("kind").getAsString() : "code";
+        if (!"code".equals(kind) && !"verify".equals(kind)) {
+            return "Error: 'kind' must be 'code' or 'verify'.";
+        }
+        SpecPipelineInstance instance = pipeline.getById(id);
+        if (instance == null) return "Pipeline instance not found: " + id;
+        if (!pipeline.setStepKind(id, stepIndex, kind)) {
+            return "Cannot set kind: invalid step_index " + stepIndex + " (plan has "
+                    + instance.getPlanSteps().size() + " steps).";
+        }
+        return "Step " + (stepIndex + 1) + " of pipeline " + id + " marked as '" + kind + "'.";
     }
 
     private String linkChange(JsonObject arguments) {

@@ -58,6 +58,474 @@ public class PipelinePanel extends JPanel {
 
     Function<String, String> changeNamePrompt = this::promptChangeName;
 
+    /** Deterministic TDD scaffolding keyed by task text, so Execute Step can drive arbitrary new
+     *  features (not just the Stop button). When a task matches, the model writes the exact test
+     *  verbatim, performs the exact GREEN patch(es), and runs the enforcer cycle. A blueprint may
+     *  carry several ordered edits; they are applied in order during the GREEN phase. */
+    record TddBlueprint(String matchKeyword, String testFilePath, String testSource,
+                        List<Edit> edits,
+                        String sourceContextFile, String[] sourceContextKeywords) {
+        /** One exact (oldString -> newString) replacement in a single file. */
+        record Edit(String filePath, String oldString, String newString) {}
+
+        boolean matches(String task) {
+            return task != null && task.toLowerCase().contains(matchKeyword);
+        }
+    }
+
+    private static final String BLUEPRINT_STOP_TEST = """
+            package com.example.myplugin.ui;
+
+            import com.example.myplugin.service.ConversationService;
+            import org.junit.jupiter.api.Test;
+
+            import static org.junit.jupiter.api.Assertions.*;
+
+            class ChatPanelTest {
+
+                private void flushEdt() {
+                    try {
+                        javax.swing.SwingUtilities.invokeAndWait(() -> { });
+                    } catch (Exception ignored) {
+                    }
+                }
+
+                @Test
+                void stopDuringStreamingResetsUiState() {
+                    ChatPanel panel = new ChatPanel(null, ConversationService.inMemory());
+                    panel.simulateStreamingForTest();
+                    flushEdt();
+                    assertTrue(panel.isStreamingActive());
+                    assertTrue(panel.isStopEnabled());
+                    assertFalse(panel.isSendEnabled());
+
+                    panel.stopStreaming();
+                    flushEdt();
+
+                    assertFalse(panel.isStreamingActive());
+                    assertTrue(panel.isSendEnabled());
+                    assertFalse(panel.isStopEnabled());
+                }
+            }
+            """;
+
+    private static final String BLUEPRINT_BUBBLE_TEST = """
+            package com.example.myplugin.ui;
+
+            import com.example.myplugin.service.ConversationService;
+            import org.junit.jupiter.api.Test;
+
+            import static org.junit.jupiter.api.Assertions.*;
+
+            class ChatPanelTest {
+
+                private void flushEdt() {
+                    try {
+                        javax.swing.SwingUtilities.invokeAndWait(() -> { });
+                    } catch (Exception ignored) {
+                    }
+                }
+
+                @Test
+                void stopDuringStreamingResetsUiState() {
+                    ChatPanel panel = new ChatPanel(null, ConversationService.inMemory());
+                    panel.simulateStreamingForTest();
+                    flushEdt();
+                    assertTrue(panel.isStreamingActive());
+                    assertTrue(panel.isStopEnabled());
+                    assertFalse(panel.isSendEnabled());
+
+                    panel.stopStreaming();
+                    flushEdt();
+
+                    assertFalse(panel.isStreamingActive());
+                    assertTrue(panel.isSendEnabled());
+                    assertFalse(panel.isStopEnabled());
+                }
+
+                @Test
+                void renderBubbleHtmlPrefixesByRole() {
+                    assertEquals("<html><body>You: Hello</body></html>",
+                            ChatPanel.renderBubbleHtml("USER", "Hello"));
+                    assertEquals("<html><body>You: Hello</body></html>",
+                            ChatPanel.renderBubbleHtml("user", "Hello"));
+                    assertEquals("<html><body>Assistant: Hello</body></html>",
+                            ChatPanel.renderBubbleHtml("assistant", "Hello"));
+                }
+
+                @Test
+                void renderBubbleHtmlTreatsUnknownRoleAsAssistant() {
+                    assertEquals("<html><body>Assistant: Hi</body></html>",
+                            ChatPanel.renderBubbleHtml("moderator", "Hi"));
+                }
+
+                @Test
+                void renderBubbleHtmlEmptyAndNullContent() {
+                    assertEquals("<html><body>You: </body></html>",
+                            ChatPanel.renderBubbleHtml("user", null));
+                    assertEquals("<html><body>You: </body></html>",
+                            ChatPanel.renderBubbleHtml("USER", ""));
+                    assertEquals("<html><body>Assistant: </body></html>",
+                            ChatPanel.renderBubbleHtml("assistant", ""));
+                }
+
+                @Test
+                void renderBubbleHtmlRendersBold() {
+                    assertTrue(ChatPanel.renderBubbleHtml("assistant", "**bold**")
+                            .contains("<strong>bold</strong>"));
+                }
+
+                @Test
+                void renderBubbleHtmlWrapsParagraphs() {
+                    String html = ChatPanel.renderBubbleHtml("user", "First\\n\\nSecond");
+                    assertTrue(html.contains("<p>First</p>"));
+                    assertTrue(html.contains("<p>Second</p>"));
+                }
+            }
+            """;
+
+    private static final String BLUEPRINT_STREAMING_TEST = """
+            package com.example.myplugin.ui;
+
+            import com.example.myplugin.service.ConversationService;
+            import org.junit.jupiter.api.Test;
+
+            import static org.junit.jupiter.api.Assertions.*;
+
+            class ChatPanelTest {
+
+                private void flushEdt() {
+                    try {
+                        javax.swing.SwingUtilities.invokeAndWait(() -> { });
+                    } catch (Exception ignored) {
+                    }
+                }
+
+                @Test
+                void stopDuringStreamingResetsUiState() {
+                    ChatPanel panel = new ChatPanel(null, ConversationService.inMemory());
+                    panel.simulateStreamingForTest();
+                    flushEdt();
+                    assertTrue(panel.isStreamingActive());
+                    assertTrue(panel.isStopEnabled());
+                    assertFalse(panel.isSendEnabled());
+
+                    panel.stopStreaming();
+                    flushEdt();
+
+                    assertFalse(panel.isStreamingActive());
+                    assertTrue(panel.isSendEnabled());
+                    assertFalse(panel.isStopEnabled());
+                }
+
+                @Test
+                void renderBubbleHtmlPrefixesByRole() {
+                    assertEquals("<html><body>You: Hello</body></html>",
+                            ChatPanel.renderBubbleHtml("USER", "Hello"));
+                    assertEquals("<html><body>You: Hello</body></html>",
+                            ChatPanel.renderBubbleHtml("user", "Hello"));
+                    assertEquals("<html><body>Assistant: Hello</body></html>",
+                            ChatPanel.renderBubbleHtml("assistant", "Hello"));
+                }
+
+                @Test
+                void renderBubbleHtmlTreatsUnknownRoleAsAssistant() {
+                    assertEquals("<html><body>Assistant: Hi</body></html>",
+                            ChatPanel.renderBubbleHtml("moderator", "Hi"));
+                }
+
+                @Test
+                void renderBubbleHtmlEmptyAndNullContent() {
+                    assertEquals("<html><body>You: </body></html>",
+                            ChatPanel.renderBubbleHtml("user", null));
+                    assertEquals("<html><body>You: </body></html>",
+                            ChatPanel.renderBubbleHtml("USER", ""));
+                    assertEquals("<html><body>Assistant: </body></html>",
+                            ChatPanel.renderBubbleHtml("assistant", ""));
+                }
+
+                @Test
+                void renderBubbleHtmlRendersBold() {
+                    assertTrue(ChatPanel.renderBubbleHtml("assistant", "**bold**")
+                            .contains("<strong>bold</strong>"));
+                }
+
+                @Test
+                void renderBubbleHtmlWrapsParagraphs() {
+                    String html = ChatPanel.renderBubbleHtml("user", "First\\n\\nSecond");
+                    assertTrue(html.contains("<p>First</p>"));
+                    assertTrue(html.contains("<p>Second</p>"));
+                }
+
+                @Test
+                void renderStreamingAnswerRerendersAccumulatedText() {
+                    assertEquals("<html><body>Assistant: Hello</body></html>",
+                            ChatPanel.renderStreamingAnswer("Hello"));
+                    assertTrue(ChatPanel.renderStreamingAnswer("**bold**")
+                            .contains("<strong>bold</strong>"));
+                    String html = ChatPanel.renderStreamingAnswer("First\\n\\nSecond");
+                    assertTrue(html.contains("<p>First</p>"));
+                    assertTrue(html.contains("<p>Second</p>"));
+                }
+
+                @Test
+                void renderStreamingAnswerEmptyAndNull() {
+                    assertEquals("<html><body>Assistant: </body></html>",
+                            ChatPanel.renderStreamingAnswer(null));
+                    assertEquals("<html><body>Assistant: </body></html>",
+                            ChatPanel.renderStreamingAnswer(""));
+                }
+            }
+            """;
+
+    /** Full ChatPanelTest for the streaming-wiring step: keeps every existing assertion green and adds
+     *  the two new deterministic RED tests for the accumulating answer buffer. */
+    private static final String BLUEPRINT_STREAMING_WIRING_TEST = """
+            package com.example.myplugin.ui;
+
+            import com.example.myplugin.service.ConversationService;
+            import org.junit.jupiter.api.Test;
+
+            import static org.junit.jupiter.api.Assertions.*;
+
+            class ChatPanelTest {
+
+                private void flushEdt() {
+                    try {
+                        javax.swing.SwingUtilities.invokeAndWait(() -> { });
+                    } catch (Exception ignored) {
+                    }
+                }
+
+                @Test
+                void stopDuringStreamingResetsUiState() {
+                    ChatPanel panel = new ChatPanel(null, ConversationService.inMemory());
+                    panel.simulateStreamingForTest();
+                    flushEdt();
+                    assertTrue(panel.isStreamingActive());
+                    assertTrue(panel.isStopEnabled());
+                    assertFalse(panel.isSendEnabled());
+
+                    panel.stopStreaming();
+                    flushEdt();
+
+                    assertFalse(panel.isStreamingActive());
+                    assertTrue(panel.isSendEnabled());
+                    assertFalse(panel.isStopEnabled());
+                }
+
+                @Test
+                void renderBubbleHtmlPrefixesByRole() {
+                    assertEquals("<html><body>You: Hello</body></html>",
+                            ChatPanel.renderBubbleHtml("USER", "Hello"));
+                    assertEquals("<html><body>You: Hello</body></html>",
+                            ChatPanel.renderBubbleHtml("user", "Hello"));
+                    assertEquals("<html><body>Assistant: Hello</body></html>",
+                            ChatPanel.renderBubbleHtml("assistant", "Hello"));
+                }
+
+                @Test
+                void renderBubbleHtmlTreatsUnknownRoleAsAssistant() {
+                    assertEquals("<html><body>Assistant: Hi</body></html>",
+                            ChatPanel.renderBubbleHtml("moderator", "Hi"));
+                }
+
+                @Test
+                void renderBubbleHtmlEmptyAndNullContent() {
+                    assertEquals("<html><body>You: </body></html>",
+                            ChatPanel.renderBubbleHtml("user", null));
+                    assertEquals("<html><body>You: </body></html>",
+                            ChatPanel.renderBubbleHtml("USER", ""));
+                    assertEquals("<html><body>Assistant: </body></html>",
+                            ChatPanel.renderBubbleHtml("assistant", ""));
+                }
+
+                @Test
+                void renderBubbleHtmlRendersBold() {
+                    assertTrue(ChatPanel.renderBubbleHtml("assistant", "**bold**")
+                            .contains("<strong>bold</strong>"));
+                }
+
+                @Test
+                void renderBubbleHtmlWrapsParagraphs() {
+                    String html = ChatPanel.renderBubbleHtml("user", "First\\n\\nSecond");
+                    assertTrue(html.contains("<p>First</p>"));
+                    assertTrue(html.contains("<p>Second</p>"));
+                }
+
+                @Test
+                void renderStreamingAnswerRerendersAccumulatedText() {
+                    assertEquals("<html><body>Assistant: Hello</body></html>",
+                            ChatPanel.renderStreamingAnswer("Hello"));
+                    assertTrue(ChatPanel.renderStreamingAnswer("**bold**")
+                            .contains("<strong>bold</strong>"));
+                    String html = ChatPanel.renderStreamingAnswer("First\\n\\nSecond");
+                    assertTrue(html.contains("<p>First</p>"));
+                    assertTrue(html.contains("<p>Second</p>"));
+                }
+
+                @Test
+                void renderStreamingAnswerEmptyAndNull() {
+                    assertEquals("<html><body>Assistant: </body></html>",
+                            ChatPanel.renderStreamingAnswer(null));
+                    assertEquals("<html><body>Assistant: </body></html>",
+                            ChatPanel.renderStreamingAnswer(""));
+                }
+
+                @Test
+                void appendStreamingChunkAccumulatesAndRendersEachFragment() {
+                    StringBuilder buffer = new StringBuilder();
+                    assertEquals("<html><body>Assistant: Hel</body></html>",
+                            ChatPanel.appendStreamingChunk("Hel", buffer));
+                    assertEquals("<html><body>Assistant: Hello</body></html>",
+                            ChatPanel.appendStreamingChunk("lo", buffer));
+                    assertEquals("<html><body>Assistant: Hello</body></html>",
+                            ChatPanel.appendStreamingChunk(null, buffer));
+                }
+
+                @Test
+                void appendStreamingChunkRendersMarkdownAcrossFragments() {
+                    StringBuilder buffer = new StringBuilder();
+                    ChatPanel.appendStreamingChunk("**bo", buffer);
+                    assertTrue(ChatPanel.appendStreamingChunk("ld**", buffer)
+                            .contains("<strong>bold</strong>"));
+                }
+            }
+            """;
+
+    private static final List<TddBlueprint> BLUEPRINTS = List.of(
+            new TddBlueprint("renderbubblehtml",
+                    "src/test/java/com/example/myplugin/ui/ChatPanelTest.java",
+                    BLUEPRINT_BUBBLE_TEST,
+                    List.of(new TddBlueprint.Edit(
+                            "src/main/java/com/example/myplugin/ui/ChatPanel.java",
+                            "    // --- Test seams (package-private, deterministic RED target) ---\n",
+                            "    static String renderBubbleHtml(String role, String content) {\n"
+                                    + "        String prefix = role != null && role.equalsIgnoreCase(\"user\") ? \"You: \" : \"Assistant: \";\n"
+                                    + "        String body = new com.example.markdown.MarkdownRenderer().render(content);\n"
+                                    + "        return \"<html><body>\" + prefix + body + \"</body></html>\";\n"
+                                    + "    }\n"
+                                    + "\n"
+                                    + "    // --- Test seams (package-private, deterministic RED target) ---\n")),
+                    "src/main/java/com/example/myplugin/ui/ChatPanel.java",
+                    new String[]{"renderBubbleHtml", "addUserMessage", "addAssistantMessage",
+                            "currentAnswerArea", "setStreaming"}),
+            new TddBlueprint("流式回答区",
+                    "src/test/java/com/example/myplugin/ui/ChatPanelTest.java",
+                    BLUEPRINT_STREAMING_TEST,
+                    List.of(new TddBlueprint.Edit(
+                            "src/main/java/com/example/myplugin/ui/ChatPanel.java",
+                            "    // --- Test seams (package-private, deterministic RED target) ---\n",
+                            "    static String renderStreamingAnswer(String accumulatedText) {\n"
+                                    + "        return renderBubbleHtml(\"assistant\", accumulatedText);\n"
+                                    + "    }\n"
+                                    + "\n"
+                                    + "    // --- Test seams (package-private, deterministic RED target) ---\n")),
+                    "src/main/java/com/example/myplugin/ui/ChatPanel.java",
+                    new String[]{"renderStreamingAnswer", "renderBubbleHtml", "currentAnswerArea",
+                            "answerArea", "setStreaming", "isStreaming"}),
+            new TddBlueprint("jtextpane",
+                    "src/test/java/com/example/myplugin/ui/ChatPanelTest.java",
+                    BLUEPRINT_STREAMING_WIRING_TEST,
+                    List.of(
+                            new TddBlueprint.Edit(
+                                    "src/main/java/com/example/myplugin/ui/ChatPanel.java",
+                                    "    // Streaming state\n"
+                                            + "    private ThinkingPanel currentThinkingPanel;\n"
+                                            + "    private JTextArea currentAnswerArea;\n",
+                                    "    // Streaming state\n"
+                                            + "    private ThinkingPanel currentThinkingPanel;\n"
+                                            + "    private JTextPane currentAnswerArea;\n"
+                                            + "    private final StringBuilder streamingAnswerBuffer = new StringBuilder();\n"),
+                            new TddBlueprint.Edit(
+                                    "src/main/java/com/example/myplugin/ui/ChatPanel.java",
+                                    "        currentAnswerArea = new JTextArea(\"Assistant:\\n\");\n"
+                                            + "        currentAnswerArea.setEditable(false);\n"
+                                            + "        currentAnswerArea.setLineWrap(true);\n"
+                                            + "        currentAnswerArea.setWrapStyleWord(true);\n"
+                                            + "        currentAnswerArea.setFont(new Font(\"Monospaced\", Font.PLAIN, 13));\n",
+                                    "        streamingAnswerBuffer.setLength(0);\n"
+                                            + "        currentAnswerArea = new JTextPane();\n"
+                                            + "        currentAnswerArea.setEditable(false);\n"
+                                            + "        currentAnswerArea.setContentType(\"text/html\");\n"
+                                            + "        currentAnswerArea.setFont(new Font(\"Monospaced\", Font.PLAIN, 13));\n"),
+                            new TddBlueprint.Edit(
+                                    "src/main/java/com/example/myplugin/ui/ChatPanel.java",
+                                    "    static String renderStreamingAnswer(String accumulatedText) {\n"
+                                            + "        return renderBubbleHtml(\"assistant\", accumulatedText);\n"
+                                            + "    }\n"
+                                            + "\n"
+                                            + "    // --- Test seams (package-private, deterministic RED target) ---\n",
+                                    "    static String renderStreamingAnswer(String accumulatedText) {\n"
+                                            + "        return renderBubbleHtml(\"assistant\", accumulatedText);\n"
+                                            + "    }\n"
+                                            + "\n"
+                                            + "    static String appendStreamingChunk(String chunk, StringBuilder buffer) {\n"
+                                            + "        if (chunk != null) {\n"
+                                            + "            buffer.append(chunk);\n"
+                                            + "        }\n"
+                                            + "        return renderStreamingAnswer(buffer.toString());\n"
+                                            + "    }\n"
+                                            + "\n"
+                                            + "    // --- Test seams (package-private, deterministic RED target) ---\n"),
+                            new TddBlueprint.Edit(
+                                    "src/main/java/com/example/myplugin/ui/ChatPanel.java",
+                                    "                        } else {\n"
+                                            + "                            currentAnswerArea.append(text);\n"
+                                            + "                            scrollToBottom(scrollPane);\n"
+                                            + "                        }\n",
+                                    "                        } else {\n"
+                                            + "                            currentAnswerArea.setText(appendStreamingChunk(text, streamingAnswerBuffer));\n"
+                                            + "                            scrollToBottom(scrollPane);\n"
+                                            + "                        }\n"),
+                            new TddBlueprint.Edit(
+                                    "src/main/java/com/example/myplugin/ui/ChatPanel.java",
+                                    "                        currentAnswerArea.append(\"\\n\\nError: \" + errorMsg);\n",
+                                    "                        currentAnswerArea.setText(renderStreamingAnswer(streamingAnswerBuffer.toString() + \"\\n\\nError: \" + errorMsg));\n"),
+                            new TddBlueprint.Edit(
+                                    "src/main/java/com/example/myplugin/ui/ChatPanel.java",
+                                    "                    currentAnswerArea.append(\"\\n\\nError: \" + e.getMessage());\n",
+                                    "                    currentAnswerArea.setText(renderStreamingAnswer(streamingAnswerBuffer.toString() + \"\\n\\nError: \" + e.getMessage()));\n")),
+                    "src/main/java/com/example/myplugin/ui/ChatPanel.java",
+                    new String[]{"appendStreamingChunk", "streamingAnswerBuffer", "currentAnswerArea",
+                            "renderStreamingAnswer", "chatResponse", "streamResponse"}),
+            new TddBlueprint("stop",
+                    "src/test/java/com/example/myplugin/ui/ChatPanelTest.java",
+                    BLUEPRINT_STOP_TEST,
+                    List.of(new TddBlueprint.Edit(
+                            "src/main/java/com/example/myplugin/ui/ChatPanel.java",
+                            "        if (currentStreamThread != null) {\n"
+                                    + "            currentStreamThread.interrupt();\n"
+                                    + "            setStreaming(false);\n"
+                                    + "        }\n",
+                            "        if (currentStreamThread != null) {\n"
+                                    + "            currentStreamThread.interrupt();\n"
+                                    + "        }\n"
+                                    + "        setStreaming(false);\n")),
+                    "src/main/java/com/example/myplugin/ui/ChatPanel.java",
+                    new String[]{"isStreaming", "stopStreaming", "setStreaming", "stopButton",
+                            "sendButton", "currentStream", "agentThread", "stream", "Stream", "cancel"}));
+
+    /** Informational tail for self-authored tasks: states the ground rules (real test output is the
+     *  only evidence; finish with mark_refactor) but imposes no tool restrictions and no forced call
+     *  sequence. Root-cause fixes for self-authored runs live in the tools (TestAnalyzer, enforcer,
+     *  exploration guard), not in this text. */
+    private static final String SELF_AUTHORED_TAIL =
+            "This is a code-writing execution task, not an analysis or review task. "
+            + "Work as an autonomous engineer in this repository using the tools provided.\n"
+            + "Ground rules for this run:\n"
+            + "1. The only task is the one from your instructions / the start_cycle task text. "
+            + "Ignore unrelated ideas, older plan documents, and other pipeline topics.\n"
+            + "2. Evidence is real only: the output you pass to verify_test and verify_code must be the "
+            + "actual current result of a run_tests/run_gradle_task call you performed in this run. "
+            + "Do not reuse, paraphrase, or imagine output.\n"
+            + "3. Drive the TDD cycle with tdd_enforcer (start_cycle -> RED -> GREEN -> REFACTOR -> "
+            + "mark_refactor). The enforcer's replies tell you which action is legal next; when a call "
+            + "is rejected, read its reply and retry accordingly instead of repeating the same call.\n"
+            + "4. Do not give a final answer until tdd_enforcer mark_refactor has succeeded and the "
+            + "pipeline has advanced. Even if the step looks already implemented, complete the cycle so "
+            + "the pipeline records verifiable evidence.";
+
     public PipelinePanel(Project project, ConversationService conversationService) {
         super(new BorderLayout());
         this.project = project;
@@ -401,6 +869,10 @@ private void buildActionMenu() {
             appendOutput("No active TDD step. Click Start TDD first.");
             return;
         }
+        if (isVerifyStep(inst)) {
+            runVerifyStep(inst);
+            return;
+        }
         String modelName = resolveModelName();
         if (modelName == null) {
             appendOutput("No loaded model. Select a model in the Chat panel first.");
@@ -408,102 +880,73 @@ private void buildActionMenu() {
         }
         String pipelineId = inst.getId();
         String task = inst.currentStepTddTask();
-        String instruction = "Execute the TDD cycle for pipeline " + pipelineId
-                + " (current step: " + (inst.getCurrentStepIndex() + 1) + "/" + inst.getPlanSteps().size() + ").\n"
-                + "Run tdd_enforcer start_cycle with pipeline_id=" + pipelineId + " and task=\"" + task + "\".\n"
-                + "Then run RED->GREEN->REFACTOR: write a failing test, run it and report the output "
-                + "(verify_test), write minimal code, run the tests and report output (verify_code), "
-                + "refactor, then mark_refactor to advance the pipeline.";
-        String deterministicRedTest = """
-            package com.example.myplugin.ui;
-
-            import com.example.myplugin.service.ConversationService;
-            import org.junit.jupiter.api.Test;
-
-            import static org.junit.jupiter.api.Assertions.*;
-
-            class ChatPanelTest {
-
-                private void flushEdt() {
-                    try {
-                        javax.swing.SwingUtilities.invokeAndWait(() -> { });
-                    } catch (Exception ignored) {
-                    }
-                }
-
-                @Test
-                void stopDuringStreamingResetsUiState() {
-                    ChatPanel panel = new ChatPanel(null, ConversationService.inMemory());
-                    panel.simulateStreamingForTest();
-                    flushEdt();
-                    assertTrue(panel.isStreamingActive());
-                    assertTrue(panel.isStopEnabled());
-                    assertFalse(panel.isSendEnabled());
-
-                    panel.stopStreaming();
-                    flushEdt();
-
-                    assertFalse(panel.isStreamingActive());
-                    assertTrue(panel.isSendEnabled());
-                    assertFalse(panel.isStopEnabled());
-                }
+        String tddState = agentExecutor.currentTddState();
+        String linkedPipelineId = agentExecutor.tddLinkedPipelineId();
+        String cycleTask = agentExecutor.tddCurrentTask();
+        boolean resume = !shouldResetTdd(tddState, linkedPipelineId, pipelineId, cycleTask, task);
+        String instruction;
+        TddBlueprint blueprint;
+        String tddTail;
+        String finalInstruction;
+        if (resume) {
+            blueprint = null;
+            tddTail = SELF_AUTHORED_TAIL;
+            finalInstruction = buildResumeInstruction(pipelineId,
+                    inst.getCurrentStepIndex() + 1, inst.getPlanSteps().size(), tddState);
+        } else {
+            instruction = "Execute the TDD cycle for pipeline " + pipelineId
+                    + " (current step: " + (inst.getCurrentStepIndex() + 1) + "/" + inst.getPlanSteps().size() + ").\n"
+                    + "Run tdd_enforcer start_cycle with pipeline_id=" + pipelineId + " and task=\"" + task + "\".\n"
+                    + "Then run RED->GREEN->REFACTOR: write a failing test, run it and report the output "
+                    + "(verify_test), write minimal code, run the tests and report output (verify_code), "
+                    + "refactor, then mark_refactor to advance the pipeline.";
+            blueprint = BLUEPRINTS.stream()
+                    .filter(b -> b.matches(task))
+                    .findFirst()
+                    .orElse(null);
+            if (blueprint != null) {
+                tddTail = blueprintTail(blueprint);
+                String sourceContext = extractSourceContext(blueprint.sourceContextFile(),
+                        blueprint.sourceContextKeywords());
+                finalInstruction = (sourceContext.isEmpty() ? instruction : instruction + "\n\n" + sourceContext)
+                        + "\n\nDETERMINISTIC RED TEST \u2014 write this test file exactly as given below:\n"
+                        + "File: " + blueprint.testFilePath() + "\n" + blueprint.testSource();
+            } else {
+                tddTail = SELF_AUTHORED_TAIL;
+                finalInstruction = instruction + "\n\nDesign and write the failing test yourself, then implement "
+                        + "minimal code to make it pass. Follow the self-authored TDD workflow steps in the "
+                        + "system prompt tail exactly.";
             }
-            """;
-        String tddTail = "THIS IS A CODE-WRITING EXECUTION TASK, NOT AN ANALYSIS OR REVIEW TASK. "
-                + "You MUST actually create and modify files, never just analyze. You already have a "
-                + "completely compilable failing test below, so you do NOT need to explore anything: "
-                + "do NOT call read_file, list_files, search_code, or execute_command at all. "
-                + "Ignore any instruction to stop after 2-3 tool calls: you have a large tool-call budget, "
-                + "so keep calling tools until the TDD cycle is complete. "
-                + "The ONLY task is the one in your instructions from this conversation. IGNORE all other "
-                + "ideas or reminders: there is no TDDPipelineBridge, no pipeline 'link' action, no other "
-                + "pipeline. Do NOT call tdd_enforcer cancel. Do NOT call tdd_enforcer start_cycle more "
-                + "than once, and only with the exact task text from step 1. "
-                + "Follow this exact step order:\n"
-                + "1. tdd_enforcer start_cycle with pipeline_id and task.\n"
-                + "2. RED: write_file the deterministic test verbatim (byte-for-byte) to "
-                + "src/test/java/com/example/myplugin/ui/ChatPanelTest.java. Do NOT change a single "
-                + "character, do NOT create any other file.\n"
-                + "3. Run the test with run_tests. Test fails at RED (this is expected). "
-                + "Then call tdd_enforcer write_test, and immediately after it call "
-                + "tdd_enforcer verify_test with the real run output.\n"
-                + "4. GREEN: call edit_file once on src/main/java/com/example/myplugin/ui/ChatPanel.java "
-                + "with EXACTLY these values:\n"
-                + "   old_string:\n"
-                + "        if (currentStreamThread != null) {\n"
-                + "            currentStreamThread.interrupt();\n"
-                + "            setStreaming(false);\n"
-                + "        }\n"
-                + "   new_string:\n"
-                + "        if (currentStreamThread != null) {\n"
-                + "            currentStreamThread.interrupt();\n"
-                + "        }\n"
-                + "        setStreaming(false);\n"
-                + "   Do not change any other part of the file. Then call run_tests again, "
-                + "and call tdd_enforcer verify_code with the real output.\n"
-                + "5. REFACTOR: refine if needed, then call tdd_enforcer mark_refactor.\n"
-                + "Do NOT give a final text answer until tdd_enforcer mark_refactor has succeeded.";
-        String sourceContext = extractSourceContext();
-        String finalInstruction = (sourceContext.isEmpty()
-                ? instruction
-                : instruction + "\n\n" + sourceContext)
-                + "\n\nDETERMINISTIC RED TEST \u2014 write this file exactly as given below:\n"
-                + "File: src/test/java/com/example/myplugin/ui/ChatPanelTest.java\n"
-                + deterministicRedTest;
-        appendOutput("Executing TDD step for " + pipelineId + " ...");
+        }
+        appendOutput((resume ? "Resuming TDD step for " + pipelineId + " (state: " + tddState + ")" : "Executing TDD step for " + pipelineId) + " ...");
         new Thread(() -> {
             try {
                 List<com.example.myplugin.model.Conversation.ChatMessage> history = new java.util.ArrayList<>();
                 history.add(new com.example.myplugin.model.Conversation.ChatMessage(
                         com.example.myplugin.model.Conversation.Role.USER, finalInstruction));
-                agentExecutor.setToolCallLimitOverride(32);
+                int toolLimit = (blueprint != null) ? 32 : 48;
+                agentExecutor.setToolCallLimitOverride(toolLimit);
                 agentExecutor.setMaxIterationsOverride(30);
                 agentExecutor.setRoleOverride("dev");
                 agentExecutor.setSystemPromptTail(tddTail);
                 agentExecutor.setSuppressMemoryInjection(true);
-                String reset = agentExecutor.runTool("tdd_enforcer",
-                        "{\"action\":\"cancel\"}");
-                SwingUtilities.invokeLater(() -> appendOutput("[Reset] " + reset));
+                if (blueprint != null) {
+                    java.util.List<AgentExecutor.RequiredEdit> requiredEdits = new java.util.ArrayList<>();
+                    for (TddBlueprint.Edit e : blueprint.edits()) {
+                        requiredEdits.add(new AgentExecutor.RequiredEdit(e.filePath(), e.oldString(), e.newString()));
+                    }
+                    agentExecutor.setRequiredEdits(requiredEdits);
+                } else {
+                    agentExecutor.setRequiredEdits(null);
+                }
+                if (resume) {
+                    SwingUtilities.invokeLater(() -> appendOutput("[Resume] cycle already at " + tddState
+                            + " for " + pipelineId + "; skipping reset"));
+                } else {
+                    String reset = agentExecutor.runTool("tdd_enforcer",
+                            "{\"action\":\"cancel\"}");
+                    SwingUtilities.invokeLater(() -> appendOutput("[Reset] " + reset));
+                }
                 String answer = agentExecutor.execute(history, modelName, new AgentExecutor.AgentEvent() {
                     @Override
                     public void onThinking(String text) {
@@ -542,18 +985,58 @@ private void buildActionMenu() {
         }).start();
     }
 
-    private String extractSourceContext() {
+    /** True when the selected pipeline's current plan step is a verification/regression gate
+     *  (kind "verify"): it runs the full suite instead of a RED->GREEN->REFACTOR cycle. */
+    static boolean isVerifyStep(SpecPipelineInstance inst) {
+        return inst != null && inst.getCurrentStepIndex() >= 0
+                && inst.isVerifyStep(inst.getCurrentStepIndex());
+    }
+
+    /** Runs the full regression suite for a verify step; on green, completes the step and advances. */
+    private void runVerifyStep(SpecPipelineInstance inst) {
+        appendOutput("Executing verify/regression step for " + inst.getId() + " ...");
+        new Thread(() -> {
+            String result = agentExecutor.runTool("run_tests", "{}");
+            boolean passed = result != null && result.startsWith("TESTS PASSED");
+            SwingUtilities.invokeLater(() -> {
+                appendOutput("[Verify] " + result);
+                if (passed) {
+                    appendOutput(completeVerifyStep(inst));
+                } else {
+                    appendOutput("REGRESSION FAILED: the full test suite is not green; verify step not advanced.");
+                }
+                refreshInstances();
+            });
+        }).start();
+    }
+
+    /** Completes the current verify step and advances the pipeline (to the next step, or CHANGE when
+     *  it is the last). Package-private so tests can drive it with an in-memory service. */
+    String completeVerifyStep(SpecPipelineInstance inst) {
+        int stepIndex = inst.getCurrentStepIndex();
+        pipelineService.completeStepTdd(inst.getId(), stepIndex);
+        SpecPipelineInstance after = pipelineService.getById(inst.getId());
+        if (after != null && after.allStepsDone()) {
+            pipelineService.advance(inst.getId(), PipelineStage.CHANGE, "all plan steps done (final verify)");
+            return "Verify step " + (stepIndex + 1) + " passed; all plan steps done -> CHANGE.";
+        }
+        int next = stepIndex + 1;
+        if (after != null && after.getPlanSteps().size() > next) {
+            pipelineService.startStepTdd(inst.getId(), next);
+            return "Verify step " + (stepIndex + 1) + " passed; advanced to step " + (next + 1) + ".";
+        }
+        return "Verify step " + (stepIndex + 1) + " passed.";
+    }
+
+    private String extractSourceContext(String sourceContextFile, String[] keywords) {
         if (project == null) return "";
         String basePath = project.getBasePath();
         if (basePath == null) return "";
         try {
-            java.io.File f = new java.io.File(basePath,
-                    "src/main/java/com/example/myplugin/ui/ChatPanel.java");
+            java.io.File f = new java.io.File(basePath, sourceContextFile);
             if (!f.exists()) return "";
             java.util.List<String> lines = java.nio.file.Files.readAllLines(f.toPath());
             StringBuilder out = new StringBuilder();
-            String[] keywords = {"isStreaming", "stopStreaming", "setStreaming", "stopButton",
-                    "sendButton", "currentStream", "agentThread", "stream", "Stream", "cancel"};
             for (int i = 0; i < lines.size(); i++) {
                 if (out.length() > 9000) break;
                 String line = lines.get(i);
@@ -575,12 +1058,59 @@ private void buildActionMenu() {
                 }
             }
             if (out.length() == 0) return "";
-            return "\nRelevant source context (src/main/java/com/example/myplugin/ui/ChatPanel.java): "
-                    + "the current step task is about the Stop button / streaming, so the relevant fields and "
+            return "\nRelevant source context (" + sourceContextFile + "): "
+                    + "the current step task maps to a deterministic blueprint, so the relevant fields and "
                     + "methods are included inline here.\n" + out.toString();
         } catch (java.io.IOException e) {
             return "";
         }
+    }
+
+    private static String blueprintTail(TddBlueprint b) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("THIS IS A CODE-WRITING EXECUTION TASK, NOT AN ANALYSIS OR REVIEW TASK. "
+                + "You MUST actually create and modify files, never just analyze. You already have a "
+                + "completely compilable failing test below, so you do NOT need to explore anything: "
+                + "do NOT call read_file, list_files, search_code, or execute_command at all. "
+                + "Ignore any instruction to stop after 2-3 tool calls: you have a large tool-call budget, "
+                + "so keep calling tools until the TDD cycle is complete. "
+                + "The ONLY task is the one in your instructions from this conversation. IGNORE all other "
+                + "ideas or reminders: there is no TDDPipelineBridge, no pipeline 'link' action, no other "
+                + "pipeline. Do NOT call tdd_enforcer cancel. Do NOT call tdd_enforcer start_cycle more "
+                + "than once, and only with the exact task text from step 1. "
+                + "Follow this exact step order:\n"
+                + "1. tdd_enforcer start_cycle with pipeline_id and task.\n"
+                + "2. RED: write_file the deterministic test verbatim (byte-for-byte) to "
+                + b.testFilePath() + ". Do NOT change a single character, do NOT create any other file.\n"
+                + "3. Run the test with run_tests. Test fails at RED (this is expected). "
+                + "Then call tdd_enforcer write_test, and immediately after it call "
+                + "tdd_enforcer verify_test with the real run output.\n");
+        List<TddBlueprint.Edit> edits = b.edits();
+        if (edits.size() == 1) {
+            TddBlueprint.Edit e = edits.get(0);
+            sb.append("4. GREEN: call edit_file once on ").append(e.filePath())
+                    .append(" with EXACTLY these values:\n")
+                    .append("   old_string:\n").append(e.oldString())
+                    .append("   new_string:\n").append(e.newString())
+                    .append("   Do not change any other part of the file. ");
+        } else {
+            sb.append("4. GREEN: apply EXACTLY these ").append(edits.size())
+                    .append(" edits with edit_file, ONE call per edit, IN THIS ORDER. ")
+                    .append("Use each old_string and new_string byte-for-byte and do not change any other "
+                            + "part of any file. Apply each edit only once. If edit_file reports that an "
+                            + "old_string was not found, that edit was already applied: do not retry it, "
+                            + "just continue with the next edit.\n");
+            int i = 1;
+            for (TddBlueprint.Edit e : edits) {
+                sb.append("   edit_file ").append(i++).append(") file: ").append(e.filePath()).append("\n")
+                        .append("      old_string:\n").append(e.oldString())
+                        .append("      new_string:\n").append(e.newString()).append("\n");
+            }
+        }
+        sb.append("Then call run_tests again, and call tdd_enforcer verify_code with the real output.\n"
+                + "5. REFACTOR: refine if needed, then call tdd_enforcer mark_refactor.\n"
+                + "Do NOT give a final text answer until tdd_enforcer mark_refactor has succeeded.");
+        return sb.toString();
     }
 
     private static boolean containsAny(String s, String[] keywords) {
@@ -604,6 +1134,34 @@ private void buildActionMenu() {
             if (ch == '}') c++;
         }
         return c;
+    }
+
+    static String buildResumeInstruction(String pipelineId, int stepNumber, int totalSteps, String tddState) {
+        return "RESUME the TDD cycle for pipeline " + pipelineId
+                + " (current step: " + stepNumber + "/" + totalSteps + ").\n"
+                + "A TDD cycle is already in progress for this pipeline (enforcer state: " + tddState + "). "
+                + "Do NOT call start_cycle (it will be rejected) and do NOT call cancel.\n"
+                + "Continue the cycle from its current state: run the tests and pass their REAL current output "
+                + "to tdd_enforcer (action=verify_code), then call action=mark_refactor when the enforcer "
+                + "confirms the cycle is complete, so the pipeline records the step as done.";
+    }
+
+    /** Whether Execute Step should reset the TDD enforcer before the run. Mid-cycle states linked to the
+     *  selected pipeline are resumed instead; everything else (fresh, finished, blocked, or a cycle owned by
+     *  another pipeline) is reset so the run starts from a clean state. A cycle whose task text does not match
+     *  the selected plan step is also reset: it belongs to a different step, not the one being executed. */
+    static boolean shouldResetTdd(String tddState, String linkedPipelineId, String selectedPipelineId,
+                                  String cycleTask, String stepTask) {
+        if (tddState == null || "IDLE".equals(tddState) || "DONE".equals(tddState) || "BLOCKED".equals(tddState)) {
+            return true;
+        }
+        if (!selectedPipelineId.equals(linkedPipelineId)) {
+            return true;
+        }
+        if (cycleTask != null && stepTask != null && !cycleTask.equals(stepTask)) {
+            return true;
+        }
+        return false;
     }
 
     private String resolveModelName() {

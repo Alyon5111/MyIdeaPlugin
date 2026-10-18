@@ -347,4 +347,58 @@ class SDDPipelineToolTest {
         assertTrue(result.contains("ID: " + active.getId()), result);
         assertFalse(result.contains("ID: " + done.getId()), result);
     }
+
+    @Test
+    void testAddStepMarksVerifyPrefix() {
+        PipelineService service = PipelineService.inMemory();
+        SDDPipelineTool tool = new SDDPipelineTool(service);
+        SpecPipelineInstance pi = service.create("auth", "req");
+
+        JsonObject addStep = new JsonObject();
+        addStep.addProperty("action", "add_step");
+        addStep.addProperty("pipeline_id", pi.getId());
+        addStep.addProperty("plan_steps", "implement feature\n[verify] regression gate");
+        tool.execute(addStep);
+
+        SpecPipelineInstance loaded = service.getById(pi.getId());
+        assertEquals(2, loaded.getPlanSteps().size());
+        assertEquals("implement feature", loaded.getPlanSteps().get(0));
+        assertEquals("code", loaded.stepKind(0));
+        assertEquals("regression gate", loaded.getPlanSteps().get(1));
+        assertTrue(loaded.isVerifyStep(1));
+    }
+
+    @Test
+    void testSetStepKindAction() {
+        PipelineService service = PipelineService.inMemory();
+        SDDPipelineTool tool = new SDDPipelineTool(service);
+        SpecPipelineInstance pi = service.create("auth", "req");
+        service.addPlanStep(pi.getId(), "step one");
+
+        JsonObject args = new JsonObject();
+        args.addProperty("action", "set_step_kind");
+        args.addProperty("pipeline_id", pi.getId());
+        args.addProperty("step_index", 0);
+        args.addProperty("kind", "verify");
+        String result = tool.execute(args);
+        assertTrue(result.contains("verify"), result);
+        assertTrue(service.getById(pi.getId()).isVerifyStep(0));
+    }
+
+    @Test
+    void testSetStepKindRejectsUnknownKind() {
+        PipelineService service = PipelineService.inMemory();
+        SDDPipelineTool tool = new SDDPipelineTool(service);
+        SpecPipelineInstance pi = service.create("auth", "req");
+        service.addPlanStep(pi.getId(), "step one");
+
+        JsonObject args = new JsonObject();
+        args.addProperty("action", "set_step_kind");
+        args.addProperty("pipeline_id", pi.getId());
+        args.addProperty("step_index", 0);
+        args.addProperty("kind", "bogus");
+        String result = tool.execute(args);
+        assertTrue(result.contains("'kind' must be"), result);
+        assertFalse(service.getById(pi.getId()).isVerifyStep(0));
+    }
 }

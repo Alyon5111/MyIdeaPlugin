@@ -43,6 +43,13 @@ java {
     targetCompatibility = JavaVersion.VERSION_21
 }
 
+// Do not let the platform default charset (GBK on some Windows machines) decide how
+// source files are decoded: any non-ASCII character would fail the build with
+// "unmappable character" instead of a readable UTF-8 compile.
+tasks.withType<JavaCompile> {
+    options.encoding = "UTF-8"
+}
+
 tasks.test {
     useJUnitPlatform()
 }

@@ -75,7 +75,21 @@ public class EditFileTool implements AgentTool {
         try {
             String content = Files.readString(filePath, StandardCharsets.UTF_8);
 
-            int count = countOccurrences(content, oldString);
+            // The model (and any hardcoded blueprint strings) typically emit LF, but files on
+            // Windows are often CRLF. Normalize the search/replace text to the file's existing
+            // separator so the match succeeds and the written content never mixes \n with \r\n
+            // (mixed separators make IntelliJ's Document.setText throw an assertion).
+            String fileSep = content.contains("\r\n") ? "\r\n" : "\n";
+            String search = normalizeSeparators(oldString, fileSep);
+            String replacement = normalizeSeparators(newString, fileSep);
+
+            int count = countOccurrences(content, search);
+            if (count == 0) {
+                // Fall back to the raw string in case the caller's separator already matches.
+                search = oldString;
+                replacement = normalizeSeparators(newString, fileSep);
+                count = countOccurrences(content, search);
+            }
             if (count == 0) {
                 return "Error: old_string not found in " + path;
             }
@@ -83,15 +97,31 @@ public class EditFileTool implements AgentTool {
                 return "Error: old_string found " + count + " times in " + path + ". Must be unique. Provide more context.";
             }
 
-            updated = content.replace(oldString, newString);
+            updated = content.replace(search, replacement);
             Files.writeString(filePath, updated, StandardCharsets.UTF_8);
         } catch (IOException e) {
             LOG.warn("EditFileTool failed", e);
             return "Error editing file: " + e.getMessage();
         }
 
-        syncOpenDocumentIfNeeded(filePath, updated);
+        // The disk write already succeeded above. A Document-sync failure (e.g. the file is open
+        // in the IDE and the assertion inside setText fires) must not be reported as an edit
+        // error, or the model will retry the same call and duplicate the change.
+        try {
+            syncOpenDocumentIfNeeded(filePath, updated);
+        } catch (Throwable t) {
+            LOG.warn("EditFileTool: document sync failed after successful write", t);
+        }
         return "File edited successfully: " + path;
+    }
+
+    /**
+     * Rewrites any {@code \n} or {@code \r\n} in {@code s} to exactly {@code sep}, so a patch
+     * authored with LF line endings applies cleanly to a CRLF file (and vice versa).
+     */
+    static String normalizeSeparators(String s, String sep) {
+        String lf = s.replace("\r\n", "\n");
+        return "\r\n".equals(sep) ? lf.replace("\n", "\r\n") : lf;
     }
 
     /**

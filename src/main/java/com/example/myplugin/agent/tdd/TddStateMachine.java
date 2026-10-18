@@ -43,6 +43,20 @@ public class TddStateMachine {
         history.add("CYCLE " + cycleCount + ": Started task '" + task + "' -> RED");
     }
 
+    /** Restores a previously persisted cycle so an in-flight RED/GREEN/REFACTOR run can resume. */
+    public void restore(State state, int cycleCount, String currentTask, List<String> history,
+                        String lastTestOutput, String lastTestFailureReason) {
+        this.currentState = state;
+        this.cycleCount = cycleCount;
+        this.currentTask = currentTask;
+        this.history.clear();
+        if (history != null) {
+            this.history.addAll(history);
+        }
+        this.lastTestOutput = lastTestOutput;
+        this.lastTestFailureReason = lastTestFailureReason;
+    }
+
     public TransitionResult transition(String input) {
         switch (currentState) {
             case IDLE:
@@ -100,13 +114,16 @@ public class TddStateMachine {
             case TEST_PASSES:
                 history.add("RED_VERIFY: Test PASSES - TDD cycle broken!");
                 currentState = State.BLOCKED;
-                lastTestOutput = "TDD VIOLATION: Test passes without implementation. Delete the test and rewrite it, " +
-                    "or delete the implementation code you wrote before the test.";
+                lastTestOutput = "TDD VIOLATION: Test passes without implementation.";
                 return new TransitionResult(false,
-                    "TDD VIOLATION: Test passes without implementation! " +
-                    "You must either:\n" +
-                    "1. Delete the code you wrote before the test and start over\n" +
-                    "2. Rewrite the test to actually test the missing functionality");
+                    "TDD VIOLATION: A test passed during the RED phase, but RED requires the test to FAIL " +
+                    "against the current implementation. This usually means the behavior you wrote the test " +
+                    "for is already implemented (e.g. it was added in an earlier step).\n" +
+                    "Do NOT delete or rewrite the existing verified test assertions.\n" +
+                    "Instead, ADD a new failing test that covers a behavior the current implementation does " +
+                    "NOT yet support, run it to confirm it fails, then implement it.\n" +
+                    "If you already ran the existing test suite by mistake and it passed, run the specific " +
+                    "newly-added failing test case instead of the whole suite.");
 
             case TEST_ERROR:
                 history.add("RED_VERIFY: Test ERROR - " + analysis.getReason());

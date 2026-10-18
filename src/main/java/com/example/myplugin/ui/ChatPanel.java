@@ -54,7 +54,8 @@ public class ChatPanel extends JPanel {
 
     // Streaming state
     private ThinkingPanel currentThinkingPanel;
-    private JTextArea currentAnswerArea;
+    private JTextPane currentAnswerArea;
+    private final StringBuilder streamingAnswerBuffer = new StringBuilder();
 
     // Agent state
     private final JCheckBox agentToggle;
@@ -906,10 +907,10 @@ if (project != null) {
         currentThinkingPanel.startStreaming();
         messagesPanel.add(currentThinkingPanel);
 
-        currentAnswerArea = new JTextArea("Assistant:\n");
+        streamingAnswerBuffer.setLength(0);
+        currentAnswerArea = new JTextPane();
         currentAnswerArea.setEditable(false);
-        currentAnswerArea.setLineWrap(true);
-        currentAnswerArea.setWrapStyleWord(true);
+        currentAnswerArea.setContentType("text/html");
         currentAnswerArea.setFont(new Font("Monospaced", Font.PLAIN, 13));
         currentAnswerArea.setBackground(UIManager.getColor("Panel.background"));
         currentAnswerArea.setBorder(BorderFactory.createEmptyBorder(6, 8, 6, 8));
@@ -1087,7 +1088,7 @@ if (project != null) {
                         if ("reasoning".equals(type)) {
                             currentThinkingPanel.appendThinking(text);
                         } else {
-                            currentAnswerArea.append(text);
+                            currentAnswerArea.setText(appendStreamingChunk(text, streamingAnswerBuffer));
                             scrollToBottom(scrollPane);
                         }
                     });
@@ -1123,7 +1124,7 @@ if (project != null) {
                 (isTimeout, errorMsg) -> {
                     currentStreamHandle = null;
                     SwingUtilities.invokeLater(() -> {
-                        currentAnswerArea.append("\n\nError: " + errorMsg);
+                        currentAnswerArea.setText(renderStreamingAnswer(streamingAnswerBuffer.toString() + "\n\nError: " + errorMsg));
                         messagesPanel.remove(currentThinkingPanel);
                         currentThinkingPanel = null;
                         currentAnswerArea = null;
@@ -1177,7 +1178,7 @@ if (project != null) {
                 });
             } catch (Exception e) {
                 SwingUtilities.invokeLater(() -> {
-                    currentAnswerArea.append("\n\nError: " + e.getMessage());
+                    currentAnswerArea.setText(renderStreamingAnswer(streamingAnswerBuffer.toString() + "\n\nError: " + e.getMessage()));
                     messagesPanel.remove(currentThinkingPanel);
                     currentThinkingPanel = null;
                     currentAnswerArea = null;
@@ -1211,6 +1212,23 @@ if (project != null) {
             stopButton.setEnabled(streaming);
             inputArea.setEnabled(!streaming);
         });
+    }
+
+    static String renderBubbleHtml(String role, String content) {
+        String prefix = role != null && role.equalsIgnoreCase("user") ? "You: " : "Assistant: ";
+        String body = new com.example.markdown.MarkdownRenderer().render(content);
+        return "<html><body>" + prefix + body + "</body></html>";
+    }
+
+    static String renderStreamingAnswer(String accumulatedText) {
+        return renderBubbleHtml("assistant", accumulatedText);
+    }
+
+    static String appendStreamingChunk(String chunk, StringBuilder buffer) {
+        if (chunk != null) {
+            buffer.append(chunk);
+        }
+        return renderStreamingAnswer(buffer.toString());
     }
 
     // --- Test seams (package-private, deterministic RED target) ---

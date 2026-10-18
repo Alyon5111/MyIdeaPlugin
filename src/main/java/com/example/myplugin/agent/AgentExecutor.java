@@ -23,6 +23,7 @@ import com.example.myplugin.openspec.tool.*;
 import com.example.myplugin.model.Conversation;
 import com.example.myplugin.settings.PluginStateService;
 import com.google.gson.Gson;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.intellij.openapi.project.Project;
@@ -58,6 +59,167 @@ public class AgentExecutor {
     private static final java.util.Set<String> TDD_EXPLORATION_TOOLS =
             java.util.Set.of("list_files", "read_file", "search_code", "execute_command");
     private static final int TDD_EXPLORATION_BUDGET = 10;
+
+    /** True when a TDD-run tool result represents real forward progress: a written/edited file, an
+     *  actual test run, or a tdd_enforcer action that was neither rejected nor pure introspection.
+     *  Rejected calls / get_status are NOT progress, so the exploration budget stays spent for them. */
+    static boolean tddProgressMade(String toolName, String result, String tddState) {
+        if (result == null || result.startsWith("Error")) return false;
+        if (toolName.equals("write_file") || toolName.equals("edit_file")) return true;
+        if (toolName.equals("run_tests") || toolName.equals("run_gradle_task")) {
+            // Once RED is over, re-running a suite that still fails against an unwritten
+            // implementation is not forward progress; such loops must not reset the stall counter
+            // or restore the exploration tools (an editing attempt is captured by write/edit_file).
+            if (("GREEN".equals(tddState) || "GREEN_VERIFY".equals(tddState)) && tddRunFailed(result)) {
+                return false;
+            }
+            return true;
+        }
+        if (toolName.equals("tdd_enforcer")) {
+            return !result.startsWith("=== TDD Enforcer Status ===");
+        }
+        return false;
+    }
+
+    private static boolean tddRunFailed(String result) {
+        if (result == null) return false;
+        String low = result.toLowerCase();
+        return low.contains("exit code 1") || low.contains("failed");
+    }
+
+    /** Iterations without a state change or a file write before the run is declared stalled. */
+    static final int STALL_ITERATION_THRESHOLD = 4;
+
+    static boolean shouldReportStall(int iterationsSinceProgress) {
+        return iterationsSinceProgress >= STALL_ITERATION_THRESHOLD;
+    }
+
+    /** One exact edit a deterministic blueprint requires for the GREEN phase. */
+    public record RequiredEdit(String filePath, String oldString, String newString) {}
+
+    /** TDD states in which a deterministic blueprint's edits are expected to be applied. */
+    private static final java.util.Set<String> GREEN_PHASE_STATES = java.util.Set.of("GREEN", "GREEN_VERIFY");
+
+    /** No-progress iterations during GREEN before the executor files the still-missing blueprint
+     *  edits itself. Small enough to save the budget, large enough to let the model finish on its own. */
+    private static final int REQUIRED_EDIT_STALL_THRESHOLD = 2;
+    private static final int REQUIRED_EDIT_MAX_ATTEMPTS = 3;
+
+    /**
+     * Shown instead of re-appending a result the model already received this run. Re-reading the
+     * same files was the single largest consumer of the tool budget; the full result stays in the
+     * context above, so nothing is hidden.
+     */
+    static String repeatCallNote(String toolName, String firstResult) {
+        String head = firstResult == null ? "" : firstResult.strip();
+        int nl = head.indexOf('\n');
+        if (nl >= 0) {
+            head = head.substring(0, nl);
+        }
+        if (head.length() > 120) {
+            head = head.substring(0, 120) + "...";
+        }
+        int len = firstResult == null ? 0 : firstResult.length();
+        return "[repeat call] '" + toolName + "' with identical arguments was already executed earlier in this run; "
+                + "its result is unchanged and still present in this conversation (" + len + " chars"
+                + (head.isEmpty() ? "" : ", first line: " + head) + "). "
+                + "Calling it again cannot make progress - act on the information you already have.";
+    }
+
+    /**
+     * Factual status of a run whose tool budget ran out. The previous behaviour asked the model to
+     * narrate a final answer, which turned an unfinished cycle into plausible-looking unverified
+     * code; an incomplete cycle must be reported as incomplete.
+     */
+    static String incompleteCycleReport(String tddState, java.util.List<String> writtenFiles,
+                                        int callsUsed, int maxCalls, boolean budgetExhausted) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("=== TDD CYCLE NOT COMPLETED ===\n");
+        if (budgetExhausted) {
+            sb.append("Tool budget exhausted (").append(callsUsed).append("/").append(maxCalls)
+                    .append(" calls used). Reporting the real state instead of an unverified answer.\n\n");
+        } else {
+            sb.append("Iteration limit reached (").append(callsUsed).append("/").append(maxCalls)
+                    .append(" calls used). Reporting the real state instead of an unverified answer.\n\n");
+        }
+        sb.append("TDD state: ").append(tddState == null ? "unknown" : tddState).append("\n");
+        if (writtenFiles.isEmpty()) {
+            sb.append("Files written this run: none\n");
+        } else {
+            sb.append("Files written this run:\n");
+            for (String f : writtenFiles) {
+                sb.append("  - ").append(f).append("\n");
+            }
+        }
+        sb.append("\nThe cycle is NOT done: do not report it as complete and do not hand over code that was "
+                + "never written to disk or verified by a test run.");
+        return sb.toString();
+    }
+
+    /** One-shot factual digest injected when a run stops advancing, so the model can see its situation. */
+    static String stallDigest(String tddState, java.util.List<String> writtenFiles,
+                              java.util.List<String> readFiles, int callsRemaining, int iterationsSinceProgress) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("=== NO PROGRESS FOR ").append(iterationsSinceProgress).append(" ITERATIONS ===\n");
+        sb.append("Tool calls remaining: ").append(callsRemaining).append("\n");
+        sb.append("TDD state: ").append(tddState == null ? "unknown" : tddState).append("\n");
+        sb.append("Files written so far: ").append(writtenFiles.isEmpty() ? "none" : String.join(", ", writtenFiles)).append("\n");
+        sb.append("Files already read: ").append(readFiles.isEmpty() ? "none" : String.join(", ", readFiles)).append("\n\n");
+        sb.append("Facts about where you are:\n");
+        sb.append("- Nothing has changed state and no file was written in the last ").append(iterationsSinceProgress)
+                .append(" iterations.\n");
+        sb.append("- Re-reading the same files cannot help; that information is already in this conversation.\n");
+        sb.append("- Call tdd_enforcer get_status if you need the current state and its next legal action.\n");
+        return sb.toString();
+    }
+
+    private static String tddStateOf(Map<String, AgentTool> toolMap) {
+        AgentTool tool = toolMap.get("tdd_enforcer");
+        if (tool instanceof TddEnforcerTool enforcer) {
+            return enforcer.currentStateName();
+        }
+        return null;
+    }
+
+    /** Current TDD enforcer cycle state, so the pipeline panel can decide whether to reset or resume. */
+    public String currentTddState() {
+        return tddStateOf(toolMap);
+    }
+
+    /** Pipeline id the TDD enforcer's active cycle is linked to, if any. */
+    public String tddLinkedPipelineId() {
+        AgentTool tool = toolMap.get("tdd_enforcer");
+        if (tool instanceof TddEnforcerTool enforcer) {
+            return enforcer.linkedPipelineId();
+        }
+        return null;
+    }
+
+    /** Task text of the TDD enforcer's active cycle, so the panel can detect a cycle tied to a different plan step. */
+    public String tddCurrentTask() {
+        AgentTool tool = toolMap.get("tdd_enforcer");
+        if (tool instanceof TddEnforcerTool enforcer) {
+            return enforcer.currentTask();
+        }
+        return null;
+    }
+
+    /** The "path" a tool call acted on, so reports name files instead of echoing raw JSON arguments. */
+    private static String pathArgument(String args) {
+        try {
+            JsonElement parsed = JsonParser.parseString(args);
+            if (parsed.isJsonObject()) {
+                JsonElement path = parsed.getAsJsonObject().get("path");
+                if (path != null && path.isJsonPrimitive()) {
+                    return path.getAsString();
+                }
+            }
+        } catch (Exception ignored) {
+            // Malformed arguments: fall back to showing the raw text.
+        }
+        return null;
+    }
+
     private static final SystemMessage BASE_SYSTEM_MESSAGE = SystemMessage.from(
             "You are an expert coding agent. Use tools to explore the codebase, then provide a clear final answer.\n\n" +
             "RULES:\n" +
@@ -141,6 +303,14 @@ public class AgentExecutor {
     private String systemPromptTailOverride;
     private boolean suppressMemoryInjectionOverride = false;
 
+    /**
+     * Edits a deterministic blueprint requires for the current GREEN phase, registered by the
+     * pipeline panel via {@link #setRequiredEdits}. The executor watches them so a half-applied
+     * patch (which fails to compile and burns the budget) is completed deterministically instead.
+     */
+    private List<RequiredEdit> requiredEdits;
+    private int requiredEditAttempts = 0;
+
     /** Overrides the tool-call limit for the next execute() call (e.g. long TDD chains). -1 = use settings default. */
     public void setToolCallLimitOverride(int limit) {
         this.toolCallLimitOverride = limit;
@@ -161,6 +331,13 @@ public class AgentExecutor {
         this.systemPromptTailOverride = tail;
     }
 
+    /** Registers the exact edits a deterministic blueprint requires for GREEN. Null/empty = none.
+     *  If the model leaves any unapplied once GREEN stalls, the executor applies them itself. */
+    public void setRequiredEdits(List<RequiredEdit> edits) {
+        this.requiredEdits = edits == null ? null : new ArrayList<>(edits);
+        this.requiredEditAttempts = 0;
+    }
+
     /** Suppresses the semantic-memory injection for the next execute() call (clean-room TDD runs). */
     public void setSuppressMemoryInjection(boolean suppress) {
         this.suppressMemoryInjectionOverride = suppress;
@@ -175,6 +352,77 @@ public class AgentExecutor {
         } catch (Exception e) {
             return "Error executing tool: " + e.getMessage();
         }
+    }
+
+    /**
+     * Deterministic completion for a blueprint-driven GREEN phase. Weak models reliably apply only
+     * the first few of a longer edit list and then loop on repeats, leaving a half-applied patch
+     * that fails to compile. Once GREEN has stalled (or the model declared implementation done),
+     * apply every still-missing required edit here, using the exact same edit_file tool, and tell
+     * the model the code is complete so it proceeds to run tests + verify_code. Returns the
+     * follow-up message to inject, or null when there is nothing to do.
+     */
+    private String completeMissingRequiredEdits(String tddState, int iterationsSinceProgress,
+                                                List<String> writtenFiles) {
+        if (requiredEdits == null || requiredEdits.isEmpty()) return null;
+        if (tddState == null || !GREEN_PHASE_STATES.contains(tddState)) return null;
+
+        boolean stalled = iterationsSinceProgress >= REQUIRED_EDIT_STALL_THRESHOLD;
+        boolean modelSaysDone = "GREEN_VERIFY".equals(tddState);
+        if (!stalled && !modelSaysDone) return null;
+
+        List<String> applied = new ArrayList<>();
+        List<String> unsettled = new ArrayList<>();
+        for (RequiredEdit edit : requiredEdits) {
+            JsonObject args = new JsonObject();
+            args.addProperty("path", edit.filePath());
+            args.addProperty("old_string", edit.oldString());
+            args.addProperty("new_string", edit.newString());
+            String result = runTool("edit_file", args.toString());
+            if (result != null && result.startsWith("File edited successfully")) {
+                applied.add(edit.filePath() + " :: " + firstNonBlankLine(edit.oldString()));
+                if (writtenFiles != null && !writtenFiles.contains(edit.filePath())) {
+                    writtenFiles.add(edit.filePath());
+                }
+            } else if (result == null || !result.contains("not found")) {
+                // Already-applied edits report "not found"; anything else may be transient.
+                unsettled.add(edit.filePath() + " :: " + firstNonBlankLine(edit.oldString()));
+            }
+        }
+
+        if (applied.isEmpty()) {
+            // Nothing left to apply: the model finished the edits itself. Stop watching.
+            requiredEdits = null;
+            return null;
+        }
+
+        if (unsettled.isEmpty()) {
+            requiredEdits = null;
+        } else if (++requiredEditAttempts >= REQUIRED_EDIT_MAX_ATTEMPTS) {
+            requiredEdits = null;
+        }
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("=== DETERMINISTIC COMPLETION APPLIED ===\n");
+        sb.append("The GREEN implementation was incomplete: the framework applied ")
+                .append(applied.size()).append(" required edit(s) that were still missing:\n");
+        for (String edit : applied) {
+            sb.append("- ").append(edit).append("\n");
+        }
+        if (!unsettled.isEmpty()) {
+            sb.append("Still failing (will not be retried further): ").append(String.join(", ", unsettled)).append("\n");
+        }
+        sb.append("\nThe implementation is now complete. Do NOT re-apply any edit. Next: call run_tests, "
+                + "then call tdd_enforcer action=verify_code with the real output, then action=mark_refactor.");
+        return sb.toString();
+    }
+
+    private static String firstNonBlankLine(String text) {
+        if (text == null) return "";
+        for (String line : text.split("\n", -1)) {
+            if (!line.isBlank()) return line.strip();
+        }
+        return "";
     }
 
     public AgentExecutor(Project project) {
@@ -550,6 +798,16 @@ public class AgentExecutor {
         int explorationCalls = 0;
         boolean explorationForced = false;
 
+        // Run ledger: lets repeated calls and stalled runs be reported factually instead of
+        // silently consuming the budget.
+        java.util.Map<String, String> seenCallResults = new java.util.LinkedHashMap<>();
+        java.util.List<String> writtenFiles = new ArrayList<>();
+        java.util.List<String> readFiles = new ArrayList<>();
+        int iterationsSinceProgress = 0;
+        boolean stallReported = false;
+        int blankResponses = 0;
+        String lastTddState = isTddRun ? tddStateOf(toolMap) : null;
+
         for (int i = 0; i < maxIterations && !cancelled; i++) {
             try {
                 event.onThinking("Iteration " + (i + 1) + "/" + maxIterations);
@@ -572,6 +830,7 @@ public class AgentExecutor {
                 if (aiMessage.hasToolExecutionRequests()) {
                     event.onThinking("Model requested " + aiMessage.toolExecutionRequests().size() + " tool call(s)");
                     messages.add(aiMessage);
+                    boolean progressedThisIteration = false;
 
                     for (ToolExecutionRequest toolReq : aiMessage.toolExecutionRequests()) {
                         if (cancelled) break;
@@ -581,11 +840,12 @@ public class AgentExecutor {
                         totalToolCalls++;
 
                         if (totalToolCalls > maxToolCalls) {
-                            event.onThinking("Total tool call limit reached (" + maxToolCalls + "), forcing final answer");
-                            messages.add(UserMessage.from(
-                                    "STOP. You have used all your tool calls. " +
-                                    "Provide your final answer now based on the information you have gathered."));
-                            break;
+                            String report = incompleteCycleReport(
+                                    isTddRun ? tddStateOf(toolMap) : null, writtenFiles, totalToolCalls - 1, maxToolCalls, true);
+                            event.onThinking("Tool budget exhausted, reporting incomplete cycle");
+                            event.onAnswer(report);
+                            lastAnswer = report;
+                            return report;
                         }
 
                         String callKey = toolName + ":" + args;
@@ -597,11 +857,12 @@ public class AgentExecutor {
                         }
 
                         if (consecutiveCallCount >= 3) {
-                            event.onThinking("Repeated tool call detected, forcing final answer");
-                            messages.add(UserMessage.from(
-                                    "STOP. You have already called this exact same tool with the same arguments. " +
-                                    "Do NOT call any more tools. Provide your final answer now as plain text."));
-                            break;
+                            // Informational, not a forced answer: the iteration and tool-call caps
+                            // still terminate the run, so there is no need to push the model into
+                            // narrating an unverified result.
+                            event.onThinking("Repeated identical tool call detected ("
+                                    + consecutiveCallCount + "x), reporting it instead of forcing an answer");
+                            messages.add(UserMessage.from(repeatCallNote(toolName, seenCallResults.get(callKey))));
                         }
 
                         event.onToolCall(toolName, args);
@@ -619,8 +880,31 @@ public class AgentExecutor {
                             }
                         }
 
+                        if (toolName.equals("read_file")) {
+                            String readPath = pathArgument(args);
+                            if (readPath != null && !readFiles.contains(readPath)) {
+                                readFiles.add(readPath);
+                            }
+                        }
+
+                        if (tddProgressMade(toolName, result, tddStateOf(toolMap))) {
+                            progressedThisIteration = true;
+                            if (toolName.equals("write_file") || toolName.equals("edit_file")) {
+                                String writtenPath = pathArgument(args);
+                                writtenFiles.add(writtenPath != null ? writtenPath : args);
+                            }
+                        }
+
                         event.onToolResult(toolName, result);
-                        messages.add(ToolExecutionResultMessage.from(toolReq, truncateToolResult(result)));
+                        // A repeat of an identical call carries no new information: keep the context
+                        // small instead of appending the same multi-KB result again.
+                        String firstResult = seenCallResults.get(callKey);
+                        if (firstResult == null) {
+                            seenCallResults.put(callKey, result);
+                            messages.add(ToolExecutionResultMessage.from(toolReq, truncateToolResult(result)));
+                        } else {
+                            messages.add(ToolExecutionResultMessage.from(toolReq, repeatCallNote(toolName, firstResult)));
+                        }
 
                         if (isTddRun && TDD_EXPLORATION_TOOLS.contains(toolName)) {
                             // Pure exploration: read_file/list_files/search_code/execute_command.
@@ -640,16 +924,44 @@ public class AgentExecutor {
                                         + "), exploration tools removed from this run");
                                 break;
                             }
-                        } else if (isTddRun && explorationForced) {
-                            // A non-exploration call succeeded (wrote a file, ran tests, advanced
-                            // the enforcer) => that TDD phase made progress; allow reading again
-                            // so the next phase (e.g. GREEN) can inspect the code it must change.
+                        } else if (isTddRun && explorationForced && tddProgressMade(toolName, result, tddStateOf(toolMap))) {
+                            // Only real progress restores the exploration tools so the next TDD phase
+                            // (e.g. GREEN) can inspect the code it must change. Rejected enforcer calls
+                            // and get_status leave the budget spent.
                             activeToolSpecs = selectedTools.stream()
                                     .map(AgentTool::specification)
                                     .collect(Collectors.toList());
                             explorationForced = false;
                             explorationCalls = 0;
                             event.onThinking("TDD progress detected, exploration tools restored");
+                        }
+                    }
+
+                    if (isTddRun) {
+                        String currentState = tddStateOf(toolMap);
+                        boolean stateChanged = currentState != null && !currentState.equals(lastTddState);
+                        if (stateChanged) {
+                            lastTddState = currentState;
+                        }
+                        if (progressedThisIteration || stateChanged) {
+                            iterationsSinceProgress = 0;
+                            stallReported = false;
+                        } else {
+                            iterationsSinceProgress++;
+                            if (!stallReported && shouldReportStall(iterationsSinceProgress)) {
+                                stallReported = true;
+                                String digest = stallDigest(currentState, writtenFiles, readFiles,
+                                        Math.max(0, maxToolCalls - totalToolCalls), iterationsSinceProgress);
+                                event.onThinking("No TDD progress for " + iterationsSinceProgress
+                                        + " iterations, injecting status digest");
+                                messages.add(UserMessage.from(digest));
+                            }
+                        }
+
+                        String completion = completeMissingRequiredEdits(currentState, iterationsSinceProgress, writtenFiles);
+                        if (completion != null) {
+                            event.onThinking("GREEN incomplete: framework applied the still-missing blueprint edits");
+                            messages.add(UserMessage.from(completion));
                         }
                     }
                 } else {
@@ -661,12 +973,27 @@ public class AgentExecutor {
                                 "Do NOT answer in plain text. Call '" + strongForcedTool + "' with the appropriate action now."));
                         continue;
                     }
-                    if (text != null && !text.isEmpty()) {
+                    if (text != null && !text.isBlank()) {
                         if (streaming) {
                             lastAnswer = text;
                             return text;
                         }
                         event.onAnswer(text);
+                    } else {
+                        blankResponses++;
+                        if (blankResponses >= 3) {
+                            String fallback = isTddRun
+                                    ? incompleteCycleReport(tddStateOf(toolMap), writtenFiles, totalToolCalls, maxToolCalls, false)
+                                    : "Agent reached maximum iterations without completing.";
+                            lastAnswer = fallback;
+                            event.onAnswer(fallback);
+                            return fallback;
+                        }
+                        event.onThinking("Model returned empty text; nudging to continue with a tool call");
+                        messages.add(UserMessage.from(
+                                "Your last response contained no text. Continue the task by calling an appropriate " +
+                                "tool with real arguments (e.g. get_status, write_file, run_tests) rather than stopping."));
+                        continue;
                     }
                     lastAnswer = text;
                     return text;
@@ -677,12 +1004,28 @@ public class AgentExecutor {
                 }
                 break;
             } catch (Exception e) {
-                String error = "Agent error: " + e.getMessage();
+                String msg = e.getMessage();
+                if (msg != null && msg.contains("cannot be null or blank")) {
+                    blankResponses++;
+                    if (blankResponses >= 3) {
+                        String fallback = isTddRun
+                                ? incompleteCycleReport(tddStateOf(toolMap), writtenFiles, totalToolCalls, maxToolCalls, false)
+                                : "Agent reached maximum iterations without completing.";
+                        lastAnswer = fallback;
+                        event.onAnswer(fallback);
+                        return fallback;
+                    }
+                    event.onThinking("Model returned a blank response; retrying");
+                    messages.add(UserMessage.from(
+                            "Your last response was not readable (blank text). Continue by calling an " +
+                            "appropriate tool with real arguments rather than stopping."));
+                    continue;
+                }
+                String error = "Agent error: " + msg;
                 if (e instanceof java.net.ConnectException) {
                     String url = PluginStateService.getInstance().getLlamaCppUrl();
                     error = AgentErrorMessages.connectionError(url, e.getMessage());
                 } else {
-                    String msg = e.getMessage();
                     if (msg != null && (msg.contains("exceed_context_size_error")
                             || msg.contains("context window")
                             || msg.contains("context length")
@@ -705,7 +1048,9 @@ public class AgentExecutor {
             return "[stopped]";
         }
 
-        String fallback = "Agent reached maximum iterations without completing.";
+        String fallback = isTddRun
+                ? incompleteCycleReport(tddStateOf(toolMap), writtenFiles, totalToolCalls, maxToolCalls, false)
+                : "Agent reached maximum iterations without completing.";
         lastAnswer = fallback;
         event.onAnswer(fallback);
         return fallback;

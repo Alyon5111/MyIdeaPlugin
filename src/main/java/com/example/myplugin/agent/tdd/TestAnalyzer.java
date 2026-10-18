@@ -46,7 +46,11 @@ public class TestAnalyzer {
 
         if (BUILD_FAILED.matcher(lower).find()) {
             if (COMPILATION_ERROR.matcher(lower).find()) {
-                return new Analysis(Outcome.TEST_ERROR, extractCompilationError(testOutput));
+                // A test that cannot compile because the implementation class is absent is the
+                // standard Java TDD RED. Treating it as TEST_ERROR previously forced agents to
+                // write a stub during RED (an anti-pattern). The GREEN verification still catches
+                // genuine errors, so a safe gap remains.
+                return new Analysis(Outcome.TEST_FAILS_AS_EXPECTED, "Compilation error: implementation is absent (valid RED)");
             }
 
             if (CLASS_NOT_FOUND.matcher(lower).find()) {

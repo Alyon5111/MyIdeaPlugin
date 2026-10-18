@@ -2,6 +2,9 @@ package com.example.myplugin.agent.pipeline;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 class PipelineServiceTest {
@@ -93,8 +96,9 @@ class PipelineServiceTest {
         SpecPipelineInstance instance = service.create("auth", "req");
 
         service.advance(instance.getId(), PipelineStage.TDD, "start");
-        assertTrue(instance.getStageLog().size() >= 2);
-        assertTrue(instance.getStageLog().stream().anyMatch(l -> l.contains("ADVANCED to TDD")));
+        SpecPipelineInstance fetched = service.getById(instance.getId());
+        assertTrue(fetched.getStageLog().size() >= 2);
+        assertTrue(fetched.getStageLog().stream().anyMatch(l -> l.contains("ADVANCED to TDD")));
     }
 
     @Test
@@ -115,5 +119,50 @@ class PipelineServiceTest {
         String summary = service.formatSummary();
         assertTrue(summary.contains("SPEC"));
         assertTrue(summary.contains("Users can login"));
+    }
+
+    @Test
+    void testSecondInstanceSeesPipelineCreatedByFirst() {
+        List<SpecPipelineInstance> store = new ArrayList<>();
+        PipelineService.Persistence shared = new PipelineService.Persistence() {
+            @Override
+            public List<SpecPipelineInstance> load() {
+                return new ArrayList<>(store);
+            }
+
+            @Override
+            public void save(List<SpecPipelineInstance> instances) {
+                store.clear();
+                store.addAll(instances);
+            }
+        };
+        PipelineService ui = new PipelineService(shared);
+        PipelineService agent = new PipelineService(shared);
+
+        ui.create("chat-ui", "render markdown");
+
+        assertTrue(agent.getActive().stream()
+                .anyMatch(i -> "render markdown".equals(i.getRequirement())));
+        assertTrue(agent.getAll().stream()
+                .anyMatch(i -> "render markdown".equals(i.getRequirement())));
+    }
+
+    @Test
+    void testAddPlanStepKindAndSetStepKind() {
+        PipelineService service = newService();
+        SpecPipelineInstance instance = service.create("auth", "req");
+        service.addPlanStep(instance.getId(), "code step");
+        service.addPlanStep(instance.getId(), "final regression", "verify");
+
+        SpecPipelineInstance loaded = service.getById(instance.getId());
+        assertEquals("code", loaded.stepKind(0));
+        assertEquals("verify", loaded.stepKind(1));
+        assertTrue(loaded.isVerifyStep(1));
+        // Legacy entries with no stored kind default to "code" (never out of bounds):
+        assertEquals("code", loaded.stepKind(99));
+
+        assertTrue(service.setStepKind(instance.getId(), 0, "verify"));
+        assertTrue(service.getById(instance.getId()).isVerifyStep(0));
+        assertFalse(service.setStepKind(instance.getId(), 99, "verify"));
     }
 }

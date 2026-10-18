@@ -433,4 +433,89 @@ class PipelinePanelTest {
 
         assertTrue(panel.output.getText().contains("PIPELINE RESULT: " + inst.getId()));
     }
+
+    // ---------- TDD resume / reset decision ----------
+
+    @Test
+    void shouldResetTddForFreshDoneBlockedOrUnlinked() {
+        assertTrue(PipelinePanel.shouldResetTdd(null, null, "p", null, "step task"));
+        assertTrue(PipelinePanel.shouldResetTdd("IDLE", null, "p", null, "step task"));
+        assertTrue(PipelinePanel.shouldResetTdd("DONE", null, "p", null, "step task"));
+        assertTrue(PipelinePanel.shouldResetTdd("BLOCKED", null, "p", null, "step task"));
+        // Mid-cycle but not linked to the selected pipeline: reset.
+        assertTrue(PipelinePanel.shouldResetTdd("GREEN_VERIFY", "other-pipeline", "selected", "task", "step task"));
+        // Mid-cycle with no link at all: cannot safely resume into the selected pipeline.
+        assertTrue(PipelinePanel.shouldResetTdd("REFACTOR", null, "selected", "task", "step task"));
+    }
+
+    @Test
+    void shouldNotResetForMidCycleLinkedToSelectedPipeline() {
+        assertFalse(PipelinePanel.shouldResetTdd("GREEN_VERIFY", "p", "p", "t", "t"));
+        assertFalse(PipelinePanel.shouldResetTdd("RED", "p", "p", "t", "t"));
+        assertFalse(PipelinePanel.shouldResetTdd("REFACTOR", "p", "p", "t", "t"));
+    }
+
+    @Test
+    void shouldResetWhenCycleTaskDoesNotMatchTheSelectedStepTask() {
+        // A mid-cycle resumed cycle whose task text belongs to a different plan step must not be resumed:
+        // it would keep the model working on the wrong deliverable.
+        assertTrue(PipelinePanel.shouldResetTdd("RED", "p", "p", "Implement markdown formatting support in "
+                + "MarkdownRenderer (headings, bold, italic) to satisfy MarkdownRendererTest",
+                "实现纯函数 MarkdownRenderer.java（无 Swing 无 IO，仅 ASCII）"));
+        assertTrue(PipelinePanel.shouldResetTdd("GREEN_VERIFY", "p", "p", "other task", "step task"));
+    }
+
+    @Test
+    void buildResumeInstructionTellsModelToContinueNotStartOver() {
+        String instruction = PipelinePanel.buildResumeInstruction("pipe-1", 1, 5, "GREEN_VERIFY");
+        assertTrue(instruction.contains("RESUME the TDD cycle for pipeline pipe-1"), instruction);
+        assertTrue(instruction.contains("1/5"), instruction);
+        assertTrue(instruction.contains("GREEN_VERIFY"), instruction);
+        assertTrue(instruction.contains("Do NOT call start_cycle"), instruction);
+        assertTrue(instruction.contains("mark_refactor"), instruction);
+    }
+
+    // ---------- verify-step handling ----------
+
+    @Test
+    void isVerifyStepTrueOnlyForVerifyKind() {
+        SpecPipelineInstance inst = createInstance("auth", "req");
+        service.advance(inst.getId(), PipelineStage.TDD, "tdd");
+        service.addPlanStep(inst.getId(), "code step");
+        service.addPlanStep(inst.getId(), "final regression", "verify");
+        service.startStepTdd(inst.getId(), 0);
+        assertFalse(PipelinePanel.isVerifyStep(service.getById(inst.getId())));
+
+        service.startStepTdd(inst.getId(), 1);
+        assertTrue(PipelinePanel.isVerifyStep(service.getById(inst.getId())));
+        assertFalse(PipelinePanel.isVerifyStep(null));
+    }
+
+    @Test
+    void completeVerifyStepOnFinalStepAdvancesToChange() {
+        SpecPipelineInstance inst = createInstance("auth", "req");
+        service.advance(inst.getId(), PipelineStage.TDD, "tdd");
+        service.addPlanStep(inst.getId(), "code step");
+        service.addPlanStep(inst.getId(), "final regression", "verify");
+        service.startStepTdd(inst.getId(), 1);
+
+        String msg = panel.completeVerifyStep(service.getById(inst.getId()));
+
+        assertEquals(PipelineStage.CHANGE, service.getById(inst.getId()).getCurrentStage());
+        assertTrue(msg.contains("CHANGE"), msg);
+    }
+
+    @Test
+    void completeVerifyStepOnNonFinalStepAdvancesToNext() {
+        SpecPipelineInstance inst = createInstance("auth", "req");
+        service.advance(inst.getId(), PipelineStage.TDD, "tdd");
+        service.addPlanStep(inst.getId(), "final regression", "verify");
+        service.addPlanStep(inst.getId(), "code step two");
+        service.startStepTdd(inst.getId(), 0);
+
+        String msg = panel.completeVerifyStep(service.getById(inst.getId()));
+
+        assertEquals(1, service.getById(inst.getId()).getCurrentStepIndex());
+        assertTrue(msg.contains("advanced to step 2"), msg);
+    }
 }

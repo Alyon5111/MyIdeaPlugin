@@ -18,6 +18,7 @@ public class SpecPipelineInstance {
     private String changeName;
 
     private List<String> planSteps = new ArrayList<>();
+    private List<String> planStepKinds = new ArrayList<>();
     private int currentStepIndex = -1;
 
     private List<String> stageLog;
@@ -60,8 +61,53 @@ public class SpecPipelineInstance {
     }
 
     public int addPlanStep(String step) {
+        return addPlanStep(step, "code");
+    }
+
+    /** Adds a plan step with an explicit kind: "code" (TDD cycle) or "verify" (regression gate). */
+    public int addPlanStep(String step, String kind) {
         planSteps.add(step);
+        planStepKinds.add(normalizeKind(kind));
         return planSteps.size() - 1;
+    }
+
+    private static String normalizeKind(String kind) {
+        return "verify".equals(kind) ? "verify" : "code";
+    }
+
+    /** Kind of a plan step: "code" (TDD cycle) or "verify" (regression gate). Instances persisted
+     *  before kinds existed have no stored kind; those default to "code". */
+    public String stepKind(int stepIndex) {
+        if (stepIndex >= 0 && stepIndex < planStepKinds.size()) {
+            String k = planStepKinds.get(stepIndex);
+            if (k != null && !k.isEmpty()) {
+                return k;
+            }
+        }
+        return "code";
+    }
+
+    public boolean isVerifyStep(int stepIndex) {
+        return "verify".equals(stepKind(stepIndex));
+    }
+
+    public String currentStepKind() {
+        return stepKind(currentStepIndex);
+    }
+
+    public List<String> getPlanStepKinds() { return planStepKinds; }
+
+    public boolean setStepKind(int stepIndex, String kind) {
+        if (stepIndex < 0 || stepIndex >= planSteps.size()) {
+            return false;
+        }
+        while (planStepKinds.size() < planSteps.size()) {
+            planStepKinds.add("code");
+        }
+        planStepKinds.set(stepIndex, normalizeKind(kind));
+        this.updatedAt = LocalDateTime.now();
+        log("STEP " + (stepIndex + 1) + " kind set to '" + planStepKinds.get(stepIndex) + "'");
+        return true;
     }
 
     public boolean startStepTdd(int stepIndex) {
@@ -70,7 +116,8 @@ public class SpecPipelineInstance {
         }
         this.currentStepIndex = stepIndex;
         this.updatedAt = LocalDateTime.now();
-        log("STARTED TDD for step " + (stepIndex + 1) + ": " + planSteps.get(stepIndex));
+        String verb = isVerifyStep(stepIndex) ? "STARTED VERIFY for step " : "STARTED TDD for step ";
+        log(verb + (stepIndex + 1) + ": " + planSteps.get(stepIndex));
         return true;
     }
 
@@ -79,7 +126,8 @@ public class SpecPipelineInstance {
             return false;
         }
         this.updatedAt = LocalDateTime.now();
-        log("TDD DONE for step " + (stepIndex + 1) + ": " + planSteps.get(stepIndex));
+        String verb = isVerifyStep(stepIndex) ? "VERIFY DONE for step " : "TDD DONE for step ";
+        log(verb + (stepIndex + 1) + ": " + planSteps.get(stepIndex));
         return true;
     }
 

@@ -55,6 +55,7 @@ public class PipelineService {
 
     public SpecPipelineInstance create(String specDomain, String requirement) {
         synchronized (lock) {
+            reload();
             SpecPipelineInstance instance = new SpecPipelineInstance(specDomain, requirement);
             instances.add(instance);
             persist();
@@ -64,6 +65,7 @@ public class PipelineService {
 
     public SpecPipelineInstance getById(String id) {
         synchronized (lock) {
+            reload();
             for (SpecPipelineInstance i : instances) {
                 if (i.getId().equals(id)) {
                     return i;
@@ -75,12 +77,14 @@ public class PipelineService {
 
     public List<SpecPipelineInstance> getAll() {
         synchronized (lock) {
+            reload();
             return new ArrayList<>(instances);
         }
     }
 
     public List<SpecPipelineInstance> getActive() {
         synchronized (lock) {
+            reload();
             List<SpecPipelineInstance> active = new ArrayList<>();
             for (SpecPipelineInstance i : instances) {
                 if (i.getCurrentStage() != PipelineStage.DONE) {
@@ -93,6 +97,7 @@ public class PipelineService {
 
     public List<SpecPipelineInstance> getByStage(PipelineStage stage) {
         synchronized (lock) {
+            reload();
             List<SpecPipelineInstance> result = new ArrayList<>();
             for (SpecPipelineInstance i : instances) {
                 if (i.getCurrentStage() == stage) {
@@ -104,13 +109,26 @@ public class PipelineService {
     }
 
     public int addPlanStep(String id, String step) {
+        return addPlanStep(id, step, "code");
+    }
+
+    public int addPlanStep(String id, String step, String kind) {
         SpecPipelineInstance i = getById(id);
         if (i != null) {
-            int idx = i.addPlanStep(step);
+            int idx = i.addPlanStep(step, kind);
             persist();
             return idx;
         }
         return -1;
+    }
+
+    public boolean setStepKind(String id, int stepIndex, String kind) {
+        SpecPipelineInstance i = getById(id);
+        if (i != null && i.setStepKind(stepIndex, kind)) {
+            persist();
+            return true;
+        }
+        return false;
     }
 
     public boolean startStepTdd(String id, int stepIndex) {
@@ -180,6 +198,7 @@ public class PipelineService {
 
     public List<SpecPipelineInstance> getInstances() {
         synchronized (lock) {
+            reload();
             return new ArrayList<>(instances);
         }
     }
@@ -193,6 +212,7 @@ public class PipelineService {
 
     public int size() {
         synchronized (lock) {
+            reload();
             return instances.size();
         }
     }
@@ -236,7 +256,8 @@ public class PipelineService {
             String marker = (i.getCurrentStepIndex() > step) ? "[X]"
                     : (i.getCurrentStepIndex() == step) ? "[>]"
                     : "[ ]";
-            sb.append("  ").append(marker).append(" ").append(step + 1).append(". ").append(i.getPlanSteps().get(step)).append("\n");
+            String kindMark = i.isVerifyStep(step) ? "  [verify]" : "";
+            sb.append("  ").append(marker).append(" ").append(step + 1).append(". ").append(i.getPlanSteps().get(step)).append(kindMark).append("\n");
         }
         if (i.getCurrentStepIndex() >= 0) {
             sb.append("Current step: ").append(i.getCurrentStepIndex() + 1).append("\n");

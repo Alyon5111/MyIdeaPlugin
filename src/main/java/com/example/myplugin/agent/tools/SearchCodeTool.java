@@ -109,18 +109,28 @@ public class SearchCodeTool implements AgentTool {
         VfsUtil.visitChildrenRecursively(baseVf,
                 new VirtualFileVisitor<>() {
                     @Override
-                    public boolean visitFile(@NotNull VirtualFile file) {
-                        if (results.size() >= maxResults) return false;
-                        if (file.isDirectory()) return true;
-                        String name = file.getName().toLowerCase();
-                        if (name.startsWith(".") || name.equals("node_modules")
-                                || name.equals("build") || name.equals("target")
-                                || name.equals(".git") || name.equals(".gradle")) return true;
+                    public Result visitFileEx(@NotNull VirtualFile file) {
+                        if (results.size() >= maxResults) {
+                            return SKIP_CHILDREN;
+                        }
 
+                        // Prune build/ and .git/ subtrees here. The old code filtered those names
+                        // only after "return true" for a directory had already been decided, so the
+                        // exclusion never applied and stale artifacts under build/ (test-result XML
+                        // in particular) flooded the results. SKIP_CHILDREN prunes exactly this
+                        // subtree while the walk continues with its siblings.
+                        if (file.isDirectory()) {
+                            return excludedDirName(file.getName()) ? SKIP_CHILDREN : CONTINUE;
+                        }
+                        if (excludedDirName(file.getName())) {
+                            return CONTINUE;
+                        }
+
+                        String name = file.getName().toLowerCase();
                         if (ext != null && !ext.isEmpty()) {
-                            if (!name.endsWith("." + ext.toLowerCase())) return true;
+                            if (!name.endsWith("." + ext.toLowerCase())) return CONTINUE;
                         } else {
-                            if (!isSearchableFile(name)) return true;
+                            if (!isSearchableFile(name)) return CONTINUE;
                         }
 
                         try {
@@ -144,7 +154,7 @@ public class SearchCodeTool implements AgentTool {
                         } catch (Exception e) {
                             // Skip files that can't be read
                         }
-                        return true;
+                        return CONTINUE;
                     }
                 });
 
@@ -161,6 +171,16 @@ public class SearchCodeTool implements AgentTool {
             sb.append("\n... (truncated at ").append(maxResults).append(" results)");
         }
         return sb.toString();
+    }
+
+    /**
+     * Directories and files that must never be searched: build output and IDE/VCS metadata
+     * produce matches that are pure noise (e.g. stale test-result XML under build/).
+     */
+    static boolean excludedDirName(String name) {
+        String n = name.toLowerCase();
+        return n.startsWith(".") || n.equals("node_modules") || n.equals("build")
+                || n.equals("target") || n.equals("out") || n.equals("dist");
     }
 
     private boolean isSearchableFile(String name) {

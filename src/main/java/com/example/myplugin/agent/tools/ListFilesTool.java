@@ -10,8 +10,13 @@ import dev.langchain4j.model.chat.request.json.JsonStringSchema;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Comparator;
+import java.util.List;
 
 public class ListFilesTool implements AgentTool {
+
+    /** One directory listing must stay small enough to be read once and act on. */
+    static final int DEFAULT_MAX_ENTRIES = 40;
 
     private final AgentContext context;
 
@@ -27,8 +32,8 @@ public class ListFilesTool implements AgentTool {
     @Override
     public String description() {
         return "List files and directories in a given path. "
-                + "Returns a tree-like listing. Path is relative to the project root. "
-                + "Use empty path \"\" to list the project root.";
+                + "Lists ONE level by default; pass recursive=true to descend into subdirectories. "
+                + "Path is relative to the project root. Use empty path \"\" to list the project root.";
     }
 
     @Override
@@ -38,6 +43,7 @@ public class ListFilesTool implements AgentTool {
                 .description(description())
                 .parameters(JsonObjectSchema.builder()
                         .addStringProperty("path", "Directory path relative to project root (empty for root)")
+                        .addBooleanProperty("recursive", "Descend into subdirectories (default: false, one level only)")
                         .build())
                 .build();
     }
@@ -46,86 +52,105 @@ public class ListFilesTool implements AgentTool {
     public String execute(JsonObject arguments) {
         String relPath = arguments.has("path") && !arguments.get("path").isJsonNull()
                 ? arguments.get("path").getAsString() : "";
-        Path dir = relPath.isEmpty() ? context.getBaseDir() : context.getBaseDir().resolve(relPath);
+        boolean recursive = arguments.has("recursive") && !arguments.get("recursive").isJsonNull()
+                && arguments.get("recursive").getAsBoolean();
 
-        if (!dir.startsWith(context.getBaseDir())) {
+        Path baseDir = context.getBaseDir();
+        Path dir = relPath.isEmpty() ? baseDir : baseDir.resolve(relPath);
+        if (!dir.normalize().startsWith(baseDir)) {
             return "Error: path escapes project directory";
         }
+
+        return list(baseDir, relPath, recursive, DEFAULT_MAX_ENTRIES);
+    }
+
+    /**
+     * Renders a directory listing. Extracted from {@link #execute} so the contract
+     * (one level by default, bounded size) can be verified without an IDE project.
+     */
+    static String list(Path root, String relPath, boolean recursive, int maxEntries) {
+        Path dir = (relPath == null || relPath.isEmpty()) ? root : root.resolve(relPath);
 
         if (!Files.exists(dir)) {
             return "Error: path not found: " + relPath;
         }
-
         if (!Files.isDirectory(dir)) {
             return "Error: not a directory: " + relPath;
         }
 
         StringBuilder sb = new StringBuilder();
-        try {
-            listDir(dir, context.getBaseDir(), sb, 0, 100);
-        } catch (TooManyEntriesException e) {
-            sb.append("... (truncated, too many entries)");
+        Counter counter = new Counter();
+        listDir(dir, sb, 0, recursive, maxEntries, counter);
+        if (counter.skipped > 0) {
+            sb.append("... (").append(counter.skipped).append(" more entries not shown; ")
+                    .append("narrow the path, or pass recursive=true)\n");
         }
-
         return sb.toString();
     }
 
-    private void listDir(Path dir, Path root, StringBuilder sb, int depth, int maxEntries)
-            throws TooManyEntriesException {
-        if (sb.length() > 10000) {
-            throw new TooManyEntriesException();
-        }
-
+    private static void listDir(Path dir, StringBuilder sb, int depth, boolean recursive,
+                                int maxEntries, Counter counter) {
+        List<Path> entries;
         try (var stream = Files.list(dir)) {
-            var entries = stream.sorted((a, b) -> {
-                boolean aDir = Files.isDirectory(a);
-                boolean bDir = Files.isDirectory(b);
-                if (aDir != bDir) return aDir ? -1 : 1;
-                return a.getFileName().toString().compareToIgnoreCase(b.getFileName().toString());
-            }).toList();
-
-            for (Path entry : entries) {
-                if (sb.length() > 10000) {
-                    throw new TooManyEntriesException();
-                }
-
-                String name = entry.getFileName().toString();
-                if (name.startsWith(".") || name.equals("node_modules")
-                        || name.equals("build") || name.equals("target")
-                        || name.equals("__pycache__") || name.equals(".git")) {
-                    continue;
-                }
-
-                String indent = "  ".repeat(depth);
-                if (Files.isDirectory(entry)) {
-                    sb.append(indent).append(name).append("/\n");
-                    if (depth < 5) {
-                        listDir(entry, root, sb, depth + 1, maxEntries);
-                    }
-                } else {
-                    long size = Files.exists(entry) ? 0 : 0;
-                    try {
-                        size = Files.size(entry);
-                    } catch (IOException ignored) {
-                    }
-                    sb.append(indent).append(name);
-                    if (size > 0) {
-                        sb.append(" (").append(formatSize(size)).append(")");
-                    }
-                    sb.append("\n");
-                }
-            }
+            entries = stream.sorted(Comparator
+                    .comparing((Path p) -> !Files.isDirectory(p))
+                    .thenComparing(p -> p.getFileName().toString(), String.CASE_INSENSITIVE_ORDER))
+                    .toList();
         } catch (IOException e) {
             sb.append("Error reading directory: ").append(e.getMessage()).append("\n");
+            return;
+        }
+
+        for (Path entry : entries) {
+            String name = entry.getFileName().toString();
+            if (excludedName(name)) {
+                continue;
+            }
+            if (counter.emitted >= maxEntries) {
+                counter.skipped++;
+                continue;
+            }
+            counter.emitted++;
+
+            String indent = "  ".repeat(depth);
+            if (Files.isDirectory(entry)) {
+                sb.append(indent).append(name).append("/\n");
+                if (recursive) {
+                    listDir(entry, sb, depth + 1, true, maxEntries, counter);
+                }
+            } else {
+                sb.append(indent).append(name);
+                long size = sizeOf(entry);
+                if (size > 0) {
+                    sb.append(" (").append(formatSize(size)).append(")");
+                }
+                sb.append("\n");
+            }
         }
     }
 
-    private String formatSize(long bytes) {
+    static boolean excludedName(String name) {
+        return name.startsWith(".") || name.equals("node_modules")
+                || name.equals("build") || name.equals("target")
+                || name.equals("__pycache__") || name.equals(".git");
+    }
+
+    private static long sizeOf(Path path) {
+        try {
+            return Files.size(path);
+        } catch (IOException e) {
+            return 0;
+        }
+    }
+
+    private static String formatSize(long bytes) {
         if (bytes < 1024) return bytes + " B";
         if (bytes < 1024 * 1024) return (bytes / 1024) + " KB";
         return (bytes / (1024 * 1024)) + " MB";
     }
 
-    private static class TooManyEntriesException extends Exception {
+    private static class Counter {
+        int emitted;
+        int skipped;
     }
 }

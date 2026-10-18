@@ -46,8 +46,19 @@ class TestAnalyzerTest {
         String output = "> Task :compileJava FAILED\nBUILD FAILED\ncompilation error: cannot find symbol";
         TestAnalyzer.Analysis analysis = TestAnalyzer.analyze(output);
 
-        assertEquals(TestAnalyzer.Outcome.TEST_ERROR, analysis.getOutcome());
-        assertTrue(analysis.isError());
+        assertEquals(TestAnalyzer.Outcome.TEST_FAILS_AS_EXPECTED, analysis.getOutcome());
+        assertTrue(analysis.isExpectedFailure());
+    }
+
+    @Test
+    void analyzeBuildFailedWithCannotFindSymbolIsValidRed() {
+        String output = "> Task :compileTestJava FAILED\nBUILD FAILED\n"
+                + "MarkdownRendererTest.java:15: error: cannot find symbol\n"
+                + "  symbol:   class MarkdownRenderer\n2 errors";
+        TestAnalyzer.Analysis analysis = TestAnalyzer.analyze(output);
+
+        assertEquals(TestAnalyzer.Outcome.TEST_FAILS_AS_EXPECTED, analysis.getOutcome());
+        assertTrue(analysis.isExpectedFailure());
     }
 
     @Test

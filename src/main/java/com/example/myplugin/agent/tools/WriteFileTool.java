@@ -59,6 +59,10 @@ public class WriteFileTool implements AgentTool {
 
         try {
             Files.createDirectories(filePath.getParent());
+
+            String previous = Files.exists(filePath)
+                    ? Files.readString(filePath, StandardCharsets.UTF_8) : null;
+
             Files.writeString(filePath, content, StandardCharsets.UTF_8);
 
             WriteAction.runAndWait(() -> {
@@ -68,9 +72,23 @@ public class WriteFileTool implements AgentTool {
                 }
             });
 
-            return "File written successfully: " + path;
+            return "File written successfully: " + path + describeWrite(previous, content);
         } catch (IOException e) {
             return "Error writing file: " + e.getMessage();
         }
+    }
+
+    /**
+     * Make overwrites visible: silently replacing an existing file (as opposed to creating one)
+     * is a decision the model should be able to see, not something to infer afterwards.
+     */
+    static String describeWrite(String previous, String content) {
+        if (previous == null) {
+            return " (new file, " + content.length() + " chars)";
+        }
+        if (previous.equals(content)) {
+            return " (no change: file already had identical content, " + content.length() + " chars)";
+        }
+        return " (OVERWROTE existing file: " + previous.length() + " -> " + content.length() + " chars)";
     }
 }

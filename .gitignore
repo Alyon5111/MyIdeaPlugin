@@ -5,3 +5,4 @@ target/
 .intellijPlatform/
 out/
 *.iml
+runide.log
